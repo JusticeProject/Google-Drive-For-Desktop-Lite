@@ -1,0 +1,5 @@
+.vscode/
+config/
+test/
+go.sum
+Google-Drive-Uploader.exe
