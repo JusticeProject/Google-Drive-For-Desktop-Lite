@@ -85,9 +85,7 @@ func walkAndCheckForModified(path string, fileInfo os.FileInfo, err error) error
 		DebugLog(fixedPath, "has changed")
 		filesToUpload[fixedPath] = true
 		return nil
-	} // else {
-	// 	delete(filesToUpload, fixedPath) // TODO: double check the logic on this call
-	// }
+	}
 
 	return nil
 }
@@ -124,7 +122,7 @@ func checkForDownloads() {
 
 		// first check if it already exists
 		localFileInfo, err := os.Stat(localPath)
-		if os.IsNotExist(err) {
+		if err != nil {
 			// doesn't exist on local side, add to download list
 			filesToDownload[localPath] = remoteFileInfo
 		} else {
@@ -244,7 +242,7 @@ func handleCreate(localPath string, isDir bool, fileName string, modifiedTime ti
 //*************************************************************************************************
 //*************************************************************************************************
 
-func handleUpload(localPath string, modifiedTime time.Time) {
+func handleSingleUpload(localPath string, modifiedTime time.Time) {
 	fileMetaData := localToRemoteLookup[localPath]
 
 	data, err := os.ReadFile(localPath)
@@ -259,81 +257,117 @@ func handleUpload(localPath string, modifiedTime time.Time) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func walkAndUpload(path string, fileInfo os.FileInfo, err error) error {
-	// ignore the desktop.ini files
-	if fileInfo.Name() == "desktop.ini" {
-		return nil
+func handleUploads() {
+	allLocalFileInfo := make(map[string]os.FileInfo)
+
+	// need to do the folders first, start by collecting the folders and sorting them by the shortest path length
+	var foldersToCreate []string
+	for localPath := range filesToUpload {
+		localFileInfo, err := os.Stat(localPath)
+		if err == nil {
+			allLocalFileInfo[localPath] = localFileInfo
+		} else {
+			// it must have been removed after we detected it but before we could upload it
+			delete(filesToUpload, localPath)
+			continue
+		}
+
+		if localFileInfo.IsDir() {
+			foldersToCreate = append(foldersToCreate, localPath)
+		}
+	}
+	sort.Strings(foldersToCreate)
+
+	// create the folders
+	for _, localPath := range foldersToCreate {
+		_, existsOnServer := localToRemoteLookup[localPath]
+		if !existsOnServer {
+			DebugLog(localPath, "does not exist on server")
+			path_split := strings.Split(localPath, "/")
+			folderName := path_split[len(path_split)-1]
+			localFileData := allLocalFileInfo[localPath]
+			err := handleCreate(localPath, true, folderName, localFileData.ModTime())
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
 	}
 
-	fixedPath := strings.ReplaceAll(path, `\`, "/")
-	_, markedForUpload := filesToUpload[fixedPath]
-	fileData, existsOnServer := localToRemoteLookup[fixedPath]
-	if markedForUpload {
+	// now handle the files
+	for localPath := range filesToUpload {
+		// get local fileInfo
+		localFileInfo := allLocalFileInfo[localPath]
+		if localFileInfo.IsDir() {
+			continue // we already handled the folders
+		}
+
+		remoteFileData, existsOnServer := localToRemoteLookup[localPath]
 		if !existsOnServer {
-			DebugLog(fixedPath, "does not exist on server")
-			// create file/folder
-			err := handleCreate(fixedPath, fileInfo.IsDir(), fileInfo.Name(), fileInfo.ModTime())
+			DebugLog(localPath, "does not exist on server")
+
+			// create file
+			err := handleCreate(localPath, localFileInfo.IsDir(), localFileInfo.Name(), localFileInfo.ModTime())
 			if err != nil {
-				return nil
+				fmt.Println(err)
 			}
-		} else if !fileInfo.IsDir() {
-			localModTime := fileInfo.ModTime()
-			remoteModTime, _ := time.Parse(time.RFC3339Nano, fileData.ModifiedTime)
+		} else {
+			localModTime := localFileInfo.ModTime()
+			remoteModTime, _ := time.Parse(time.RFC3339Nano, remoteFileData.ModifiedTime)
 			diff := localModTime.Sub(remoteModTime)
 			DebugLog("local mod time is newer by", diff.Seconds(), "seconds")
 
 			// if the local file is newer, then calculate the md5's
 			// allow for some floating point roundoff error
 			if diff.Seconds() > 0.5 {
-				localMd5 := getMd5OfFile(fixedPath)
+				localMd5 := getMd5OfFile(localPath)
 
-				if localMd5 != fileData.Md5Checksum {
-					DebugLog("md5's do not match", localMd5, fileData.Md5Checksum)
+				if localMd5 != remoteFileData.Md5Checksum {
+					DebugLog("md5's do not match", localMd5, remoteFileData.Md5Checksum)
 					DebugLog("local mod time is newer", localModTime, remoteModTime)
-					handleUpload(fixedPath, fileInfo.ModTime())
+					handleSingleUpload(localPath, localFileInfo.ModTime())
 				}
 			}
 		}
 	}
-
-	return nil
 }
 
 //*************************************************************************************************
 //*************************************************************************************************
 
-func walkAndVerify(path string, fileInfo os.FileInfo, err error) error {
-	fixedPath := strings.ReplaceAll(path, `\`, "/")
+func verifyUploads() {
+	for localPath := range filesToUpload {
 
-	fileData, onServer := localToRemoteLookup[fixedPath]
+		localFileInfo, err := os.Stat(localPath)
+		if err != nil {
+			fmt.Println("error from Stat", err)
+			delete(filesToUpload, localPath)
+			continue
+		}
+		remoteFileData, onServer := localToRemoteLookup[localPath]
 
-	if !onServer {
-		DebugLog(fixedPath, "not on server")
-		filesToUpload[fixedPath] = true
-		return nil
-	}
+		if !onServer {
+			DebugLog(localPath, "not on server")
+			continue
+		}
 
-	// if we got this far it is on the server
-	if fileInfo.IsDir() {
-		delete(filesToUpload, fixedPath)
-	} else {
-		localMd5 := getMd5OfFile(fixedPath)
-		if localMd5 == fileData.Md5Checksum {
-			delete(filesToUpload, fixedPath)
+		// if we got this far it is on the server
+		if localFileInfo.IsDir() {
+			delete(filesToUpload, localPath)
 		} else {
-			// add it to the map if it's not already there
-			DebugLog("md5 did not match for", fixedPath)
-			filesToUpload[fixedPath] = true
+			localMd5 := getMd5OfFile(localPath)
+			if localMd5 == remoteFileData.Md5Checksum {
+				delete(filesToUpload, localPath)
+			} else {
+				DebugLog("md5 did not match for", localPath)
+			}
 		}
 	}
-
-	return nil
 }
 
 //*************************************************************************************************
 //*************************************************************************************************
 
-func verifyRemoteFilesAreOnLocal() {
+func verifyDownloads() {
 	// according to the go spec, deleting keys while iterating over the map is allowed:
 	// https://go.dev/ref/spec#For_statements
 	for localPath := range filesToDownload {
@@ -393,10 +427,7 @@ func main() {
 		// do the upload
 		if len(filesToUpload) > 0 {
 			DebugLog("Preparing to upload files")
-
-			for folder := range conn.baseFolders {
-				filepath.Walk(folder, walkAndUpload)
-			}
+			handleUploads()
 		}
 
 		// do the download
@@ -407,20 +438,18 @@ func main() {
 
 		// do a verify if we uploaded or downloaded anything
 		if len(filesToUpload) > 0 || len(filesToDownload) > 0 {
-			DebugLog("Grabbing remote metadata so we can verify")
+			DebugLog("Verifying. Grabbing remote metadata first.")
 			// again grab all the metadata for the files/folders that are currently on the remote shared drive
 			conn.clearLookupMap()
 			conn.fillLookupMap(conn.getBaseFolderSlice())
 
 			verifyingAt := time.Now()
 
-			// verify local files are on the remote server
-			for localFolder := range conn.baseFolders {
-				filepath.Walk(localFolder, walkAndVerify)
-			}
+			// verify local files were uploaded to the remote server
+			verifyUploads()
 
-			// verify remote files are on the local side
-			verifyRemoteFilesAreOnLocal()
+			// verify remote files were downloaded to the local side
+			verifyDownloads()
 
 			if len(filesToUpload) == 0 && len(filesToDownload) == 0 {
 				DebugLog("verified! updating new verified timestamp to", verifyingAt)
