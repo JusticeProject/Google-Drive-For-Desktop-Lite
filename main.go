@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -18,10 +19,12 @@ var debug bool = false
 var conn GoogleDriveConnection
 
 var localFiles map[string]bool = make(map[string]bool)
-var localToRemoteLookup map[string]FileMetaData = make(map[string]FileMetaData)
+var localToRemoteLookup map[string]FileMetaData = make(map[string]FileMetaData) // key=local file name
 
 var verifiedAt time.Time
+var checkedForDownloadsAt time.Time
 var filesToUpload map[string]bool = make(map[string]bool)
+var filesToDownload map[string]FileMetaData = make(map[string]FileMetaData)
 
 //*************************************************************************************************
 //*************************************************************************************************
@@ -82,9 +85,120 @@ func walkAndCheckForModified(path string, fileInfo os.FileInfo, err error) error
 		DebugLog(fixedPath, "has changed")
 		filesToUpload[fixedPath] = true
 		return nil
-	}
+	} // else {
+	// 	delete(filesToUpload, fixedPath) // TODO: double check the logic on this call
+	// }
 
 	return nil
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func needToCheckForDownloads() bool {
+	now := time.Now()
+	diff := now.Sub(checkedForDownloadsAt)
+
+	// rate limits are:
+	//  Queries per 100 seconds	20,000
+	// Queries per day	1,000,000,000
+
+	// tODO: slow this down a bit
+	if diff.Seconds() > 100 {
+		DebugLog("It's been", diff.Seconds(), "since last check for download, will check again")
+		checkedForDownloadsAt = time.Now()
+		return true
+	} else {
+		DebugLog("Don't need to check for downloads")
+	}
+
+	return false
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func checkForDownloads() {
+	for localPath := range localToRemoteLookup {
+		remoteFileInfo := localToRemoteLookup[localPath]
+
+		// first check if it already exists
+		localFileInfo, err := os.Stat(localPath)
+		if os.IsNotExist(err) {
+			// doesn't exist on local side, add to download list
+			filesToDownload[localPath] = remoteFileInfo
+		} else {
+			// it does exist locally
+
+			// if folder then don't need to download
+			if localFileInfo.IsDir() {
+				delete(filesToDownload, localPath)
+				continue
+			}
+
+			// it's a file, but check if the remote file is newer
+			localModTime := localFileInfo.ModTime()
+			remoteModTime, _ := time.Parse(time.RFC3339Nano, remoteFileInfo.ModifiedTime)
+			diff := remoteModTime.Sub(localModTime)
+
+			// allow for some floating point roundoff error
+			if diff.Seconds() > 0.5 {
+				// the remote file is newer
+				localMD5 := getMd5OfFile(localPath)
+				if localMD5 != remoteFileInfo.Md5Checksum {
+					filesToDownload[localPath] = remoteFileInfo
+				} else {
+					delete(filesToDownload, localPath)
+				}
+			} else {
+				delete(filesToDownload, localPath)
+			}
+		}
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func handleDownloads() {
+	// need to do the folders first, start with the shortest path length
+	var foldersToCreate []string
+	for localPath := range filesToDownload {
+		remoteFileInfo := filesToDownload[localPath]
+		if strings.Contains(remoteFileInfo.MimeType, "folder") {
+			foldersToCreate = append(foldersToCreate, localPath)
+		}
+	}
+	sort.Strings(foldersToCreate)
+
+	for _, localPath := range foldersToCreate {
+		err := os.Mkdir(localPath, os.ModeDir)
+		if err == nil {
+			localFiles[localPath] = true // save this so we aren't surprised later that a new folder appeared
+			DebugLog("created local folder", localPath)
+		} else {
+			fmt.Println(err)
+		}
+	}
+
+	// download the files after the folders have been created
+	for localPath := range filesToDownload {
+		remoteFileInfo := filesToDownload[localPath]
+
+		// if it's a file
+		if !strings.Contains(remoteFileInfo.MimeType, "folder") {
+			err := conn.downloadFile(remoteFileInfo.ID, localPath)
+			if err == nil {
+				localFiles[localPath] = true // save this so we aren't surprised later that a new file appeared
+
+				modTime, _ := time.Parse(time.RFC3339Nano, remoteFileInfo.ModifiedTime)
+				err := os.Chtimes(localPath, modTime, modTime)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+		}
+	}
 }
 
 //*************************************************************************************************
@@ -137,7 +251,7 @@ func handleUpload(localPath string, modifiedTime time.Time) {
 	if err != nil {
 		fmt.Println(err)
 	} else {
-		formattedTime := modifiedTime.Format(time.RFC3339)
+		formattedTime := modifiedTime.Format(time.RFC3339Nano)
 		conn.updateFileAndMetadata(fileMetaData.ID, formattedTime, data)
 	}
 }
@@ -163,19 +277,21 @@ func walkAndUpload(path string, fileInfo os.FileInfo, err error) error {
 				return nil
 			}
 		} else if !fileInfo.IsDir() {
-			localMd5 := getMd5OfFile(fixedPath)
-			md5mismatch := localMd5 != fileData.Md5Checksum
-
 			localModTime := fileInfo.ModTime()
 			remoteModTime, _ := time.Parse(time.RFC3339Nano, fileData.ModifiedTime)
 			diff := localModTime.Sub(remoteModTime)
 			DebugLog("local mod time is newer by", diff.Seconds(), "seconds")
-			localIsNewer := diff > 0
 
-			if md5mismatch && localIsNewer {
-				DebugLog("md5's do not match", localMd5, fileData.Md5Checksum)
-				DebugLog("local mod time is newer", localModTime, remoteModTime)
-				handleUpload(fixedPath, fileInfo.ModTime())
+			// if the local file is newer, then calculate the md5's
+			// allow for some floating point roundoff error
+			if diff.Seconds() > 0.5 {
+				localMd5 := getMd5OfFile(fixedPath)
+
+				if localMd5 != fileData.Md5Checksum {
+					DebugLog("md5's do not match", localMd5, fileData.Md5Checksum)
+					DebugLog("local mod time is newer", localModTime, remoteModTime)
+					handleUpload(fixedPath, fileInfo.ModTime())
+				}
 			}
 		}
 	}
@@ -217,6 +333,32 @@ func walkAndVerify(path string, fileInfo os.FileInfo, err error) error {
 //*************************************************************************************************
 //*************************************************************************************************
 
+func verifyRemoteFilesAreOnLocal() {
+	// according to the go spec, deleting keys while iterating over the map is allowed:
+	// https://go.dev/ref/spec#For_statements
+	for localPath := range filesToDownload {
+		remoteFileData := localToRemoteLookup[localPath]
+
+		if strings.Contains(remoteFileData.MimeType, "folder") {
+			// it's a folder
+			folderInfo, err := os.Stat(localPath)
+			if err == nil && folderInfo.IsDir() {
+				delete(filesToDownload, localPath)
+			}
+		} else {
+			// it's a file
+			localMd5 := getMd5OfFile(localPath)
+
+			if localMd5 == remoteFileData.Md5Checksum {
+				delete(filesToDownload, localPath)
+			}
+		}
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
 func main() {
 	// check if we need to print debug statements
 	if len(os.Args) > 1 {
@@ -226,43 +368,61 @@ func main() {
 	conn.initializeGoogleDrive()
 	fillLocalMap()
 
-	// DebugLog("these are the files and folders that were found on the shared drive:")
-	// for localFolder, fileData := range localToRemoteLookup {
-	// 	msg := fmt.Sprintf("%v\n%v\n\n", localFolder, fileData)
-	// 	DebugLog(msg)
-	// }
-
 	for {
+		// check if we need to upload anything
 		DebugLog("Checking for any new or modified local files/folders")
 		for folder := range conn.baseFolders {
 			filepath.Walk(folder, walkAndCheckForModified)
 		}
 
-		if len(filesToUpload) > 0 {
-			DebugLog("Uploading files")
+		willCheckForDownloads := needToCheckForDownloads()
+
+		// check if we need to refresh the lookup map
+		if willCheckForDownloads || len(filesToUpload) > 0 {
 			// grab all the metadata for the files/folders that are currently on the remote shared drive
-			// because we need the ids of files/folders
-			for localFolder := range conn.baseFolders {
-				conn.fillLookupMap(localFolder)
-			}
+			// because we need the ids of files/folders, timestamps, md5's, etc.
+			conn.clearLookupMap()
+			conn.fillLookupMap(conn.getBaseFolderSlice())
+		}
+
+		// check if we need to download anything
+		if willCheckForDownloads {
+			checkForDownloads()
+		}
+
+		// do the upload
+		if len(filesToUpload) > 0 {
+			DebugLog("Preparing to upload files")
 
 			for folder := range conn.baseFolders {
 				filepath.Walk(folder, walkAndUpload)
 			}
+		}
 
+		// do the download
+		if len(filesToDownload) > 0 {
+			DebugLog("Preparing to download files")
+			handleDownloads()
+		}
+
+		// do a verify if we uploaded or downloaded anything
+		if len(filesToUpload) > 0 || len(filesToDownload) > 0 {
 			DebugLog("Grabbing remote metadata so we can verify")
 			// again grab all the metadata for the files/folders that are currently on the remote shared drive
-			for localFolder := range conn.baseFolders {
-				conn.fillLookupMap(localFolder)
-			}
+			conn.clearLookupMap()
+			conn.fillLookupMap(conn.getBaseFolderSlice())
 
 			verifyingAt := time.Now()
 
+			// verify local files are on the remote server
 			for localFolder := range conn.baseFolders {
 				filepath.Walk(localFolder, walkAndVerify)
 			}
 
-			if len(filesToUpload) == 0 {
+			// verify remote files are on the local side
+			verifyRemoteFilesAreOnLocal()
+
+			if len(filesToUpload) == 0 && len(filesToDownload) == 0 {
 				DebugLog("verified! updating new verified timestamp to", verifyingAt)
 				verifiedAt = verifyingAt
 				conn.clearLookupMap()

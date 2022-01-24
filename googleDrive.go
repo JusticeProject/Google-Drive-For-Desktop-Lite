@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -119,30 +120,48 @@ func (conn *GoogleDriveConnection) initializeGoogleDrive() {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) fillLookupMap(localFolder string) {
-	// if localFolder is a base folder and not in the lookupMap, then add it
-	baseId, isBaseFolder := conn.baseFolders[localFolder]
-	_, inLookupMap := localToRemoteLookup[localFolder]
-	if isBaseFolder && !inLookupMap {
-		localToRemoteLookup[localFolder] = FileMetaData{ID: baseId}
+func (conn *GoogleDriveConnection) getBaseFolderSlice() []string {
+	keys := make([]string, len(conn.baseFolders))
+
+	i := 0
+	for k := range conn.baseFolders {
+		keys[i] = k
+		i++
 	}
 
-	data := conn.getItemsInSharedFolder(localFolder, "")
-	for len(data.NextPageToken) > 0 {
-		newData := conn.getItemsInSharedFolder(localFolder, data.NextPageToken)
-		data.Files = append(data.Files, newData.Files...)
-		data.NextPageToken = newData.NextPageToken
-	}
+	return keys
+}
 
-	// add the files and folders to our map
-	for _, file := range data.Files {
-		localToRemoteLookup[localFolder+"/"+file.Name] = file
-	}
+//*************************************************************************************************
+//*************************************************************************************************
 
-	// if any are folders then we will need to look up their contents as well, call this same function recursively
-	for _, file := range data.Files {
-		if strings.Contains(file.MimeType, "folder") {
-			conn.fillLookupMap(localFolder + "/" + file.Name)
+func (conn *GoogleDriveConnection) fillLookupMap(localFolders []string) {
+	for _, localFolder := range localFolders {
+		// if localFolder is a base folder and not in the lookupMap, then add it
+		baseId, isBaseFolder := conn.baseFolders[localFolder]
+		_, inLookupMap := localToRemoteLookup[localFolder]
+		if isBaseFolder && !inLookupMap {
+			localToRemoteLookup[localFolder] = FileMetaData{ID: baseId}
+		}
+
+		data := conn.getItemsInSharedFolder(localFolder, "")
+		for len(data.NextPageToken) > 0 {
+			newData := conn.getItemsInSharedFolder(localFolder, data.NextPageToken)
+			data.Files = append(data.Files, newData.Files...)
+			data.NextPageToken = newData.NextPageToken
+		}
+
+		// add the files and folders to our map
+		for _, file := range data.Files {
+			localToRemoteLookup[localFolder+"/"+file.Name] = file
+		}
+
+		// if any are folders then we will need to look up their contents as well, call this same function recursively
+		for _, file := range data.Files {
+			if strings.Contains(file.MimeType, "folder") {
+				foldersToLookup := []string{localFolder + "/" + file.Name}
+				conn.fillLookupMap(foldersToLookup)
+			}
 		}
 	}
 }
@@ -397,6 +416,51 @@ func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime
 		fmt.Println("received StatusCode", response.StatusCode)
 		fmt.Println(string(data_buffer))
 		return errors.New("failed")
+	}
+
+	return nil
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string) error {
+	DebugLog("downloading", localFileName, id)
+
+	parameters := "?alt=media"
+	parameters += "&key=" + conn.api_key
+	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files/" + id + parameters)
+	DebugLog("received StatusCode", response.StatusCode)
+
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	defer response.Body.Close()
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		fmt.Println("received StatusCode", response.StatusCode)
+		data_buffer := make([]byte, 2048)
+		response.Body.Read(data_buffer)
+		fmt.Println(string(data_buffer))
+		return errors.New("failed to download")
+	}
+
+	fh, err := os.Create(localFileName)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	defer fh.Close()
+	defer response.Body.Close()
+	n, err := io.Copy(fh, response.Body)
+	DebugLog(fmt.Sprintf("Wrote %v bytes to file", n))
+	if err != nil {
+		fmt.Println(err)
+		return err
 	}
 
 	return nil
