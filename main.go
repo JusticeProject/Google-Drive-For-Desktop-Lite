@@ -14,6 +14,8 @@ import (
 //*************************************************************************************************
 //*************************************************************************************************
 
+const MAX_UPLOAD_BYTES int64 = 5 * 1024 * 1024
+
 var debug bool = false
 
 var conn GoogleDriveConnection
@@ -44,8 +46,11 @@ func getMd5OfFile(path string) string {
 //*************************************************************************************************
 
 func walkAndFillLocal(path string, fileInfo os.FileInfo, err error) error {
-	fixedPath := strings.ReplaceAll(path, `\`, "/")
-	localFiles[fixedPath] = true
+	if err != nil {
+		return err
+	}
+
+	localFiles[path] = true
 	return nil
 }
 
@@ -62,19 +67,26 @@ func fillLocalMap() {
 //*************************************************************************************************
 
 func walkAndCheckForModified(path string, fileInfo os.FileInfo, err error) error {
+	if err != nil {
+		return err
+	}
+
 	// ignore the desktop.ini files
 	if fileInfo.Name() == "desktop.ini" {
 		return nil
 	}
 
-	fixedPath := strings.ReplaceAll(path, `\`, "/")
+	// ignore files that are too big to upload (for now)
+	if fileInfo.Size() > MAX_UPLOAD_BYTES {
+		return nil
+	}
 
 	// if file shows up locally that was not there before
-	_, inLocalMap := localFiles[fixedPath]
+	_, inLocalMap := localFiles[path]
 	if !inLocalMap {
-		DebugLog(fixedPath, "suddenly appeared")
-		filesToUpload[fixedPath] = true
-		localFiles[fixedPath] = true
+		DebugLog(path, "suddenly appeared")
+		filesToUpload[path] = true
+		localFiles[path] = true
 		return nil
 	}
 
@@ -82,8 +94,8 @@ func walkAndCheckForModified(path string, fileInfo os.FileInfo, err error) error
 	diff := modifiedAt.Sub(verifiedAt)
 
 	if diff > 0 {
-		DebugLog(fixedPath, "has changed")
-		filesToUpload[fixedPath] = true
+		DebugLog(path, "has changed")
+		filesToUpload[path] = true
 		return nil
 	}
 
@@ -209,7 +221,7 @@ func handleCreate(localPath string, isDir bool, fileName string, modifiedTime ti
 		return errors.New("failed to generate id") // we'll try again next time
 	}
 
-	parentPath := strings.TrimSuffix(localPath, "/"+fileName)
+	parentPath := filepath.Dir(localPath)
 	parentId, parentInMap := localToRemoteLookup[parentPath]
 	if !parentInMap {
 		// if parent folder is not on remote side yet just skip the file for now, we'll handle it on the next loop
@@ -269,6 +281,7 @@ func handleUploads() {
 		} else {
 			// it must have been removed after we detected it but before we could upload it
 			delete(filesToUpload, localPath)
+			delete(localFiles, localPath)
 			continue
 		}
 
@@ -283,8 +296,7 @@ func handleUploads() {
 		_, existsOnServer := localToRemoteLookup[localPath]
 		if !existsOnServer {
 			DebugLog(localPath, "does not exist on server")
-			path_split := strings.Split(localPath, "/")
-			folderName := path_split[len(path_split)-1]
+			folderName := filepath.Base(localPath)
 			localFileData := allLocalFileInfo[localPath]
 			err := handleCreate(localPath, true, folderName, localFileData.ModTime())
 			if err != nil {

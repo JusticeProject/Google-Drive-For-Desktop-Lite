@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/oauth2/google"
@@ -153,13 +154,13 @@ func (conn *GoogleDriveConnection) fillLookupMap(localFolders []string) {
 
 		// add the files and folders to our map
 		for _, file := range data.Files {
-			localToRemoteLookup[localFolder+"/"+file.Name] = file
+			localToRemoteLookup[filepath.Join(localFolder, file.Name)] = file
 		}
 
 		// if any are folders then we will need to look up their contents as well, call this same function recursively
 		for _, file := range data.Files {
 			if strings.Contains(file.MimeType, "folder") {
-				foldersToLookup := []string{localFolder + "/" + file.Name}
+				foldersToLookup := []string{filepath.Join(localFolder, file.Name)}
 				conn.fillLookupMap(foldersToLookup)
 			}
 		}
