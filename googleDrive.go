@@ -11,11 +11,13 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/jwt"
 	"google.golang.org/api/drive/v2"
 )
 
@@ -23,6 +25,7 @@ import (
 //*************************************************************************************************
 
 type GoogleDriveConnection struct {
+	conf        *jwt.Config
 	client      *http.Client
 	api_key     string
 	ctx         context.Context
@@ -46,6 +49,24 @@ type FileMetaData struct {
 type ListFilesResponse struct {
 	NextPageToken string         `json:"nextPageToken"`
 	Files         []FileMetaData `json:"files"`
+}
+
+//*********************************************************
+
+type SearchMetaData struct {
+	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	MimeType     string   `json:"mimeType"`
+	ModifiedTime string   `json:"modifiedTime"` // "modifiedTime": "2022-01-22T18:32:04.223Z"
+	Md5Checksum  string   `json:"md5Checksum"`
+	Parents      []string `json:"parents"`
+	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
+}
+
+type SearchFilesResponse struct {
+	NextPageToken string           `json:"nextPageToken"`
+	Files         []SearchMetaData `json:"files"`
 }
 
 //*********************************************************
@@ -89,6 +110,7 @@ func (conn *GoogleDriveConnection) initializeGoogleDrive() {
 	if err != nil {
 		log.Fatal("failed to parse json file")
 	}
+	conn.conf = conf
 	conn.ctx = context.Background()
 	conn.client = conf.Client(conn.ctx)
 
@@ -171,7 +193,9 @@ func (conn *GoogleDriveConnection) fillLookupMap(localFolders []string) {
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) clearLookupMap() {
-	localToRemoteLookup = make(map[string]FileMetaData)
+	if len(localToRemoteLookup) > 0 {
+		localToRemoteLookup = make(map[string]FileMetaData)
+	}
 }
 
 //*************************************************************************************************
@@ -210,31 +234,16 @@ func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		data_buffer := make([]byte, 2048)
-		response.Body.Read(data_buffer)
-		fmt.Println(string(data_buffer))
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(bodyData))
 		return ListFilesResponse{}
 	}
 
 	// decode the json data into our struct
 	var data ListFilesResponse
-
-	// method 1
-	// data_buffer := make([]byte, 4096)
-	// reader := bufio.NewReader(response.Body)
-	// n, err := reader.Read(data_buffer)
-	// data_buffer = data_buffer[:n]
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
-	// fmt.Printf("read %v bytes from the body\n", n)
-	// err = json.Unmarshal(data_buffer, &data)
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
-
-	// method 2
 	err = json.NewDecoder(response.Body).Decode(&data)
 	if err != nil {
 		fmt.Println(err)
@@ -263,10 +272,11 @@ func (conn *GoogleDriveConnection) generateIds(count int) []string {
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		data_buffer := make([]byte, 1024)
-		response.Body.Read(data_buffer)
-		fmt.Println(string(data_buffer))
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(bodyData))
 		return []string{}
 	}
 
@@ -300,13 +310,16 @@ func (conn *GoogleDriveConnection) createRemoteFolder(folderRequest CreateFolder
 	}
 
 	defer response.Body.Close()
-	data_buffer := make([]byte, 1024)
-	response.Body.Read(data_buffer)
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	DebugLog(string(bodyData))
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		fmt.Println(string(data_buffer))
+		fmt.Println(string(bodyData))
 		return errors.New("failed")
 	}
 
@@ -354,13 +367,16 @@ func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileReques
 	}
 
 	defer response.Body.Close()
-	data_buffer := make([]byte, 1024)
-	response.Body.Read(data_buffer)
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	DebugLog(string(bodyData))
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		fmt.Println(string(data_buffer))
+		fmt.Println(string(bodyData))
 		return errors.New("failed")
 	}
 
@@ -409,13 +425,16 @@ func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime
 	}
 
 	defer response.Body.Close()
-	data_buffer := make([]byte, 1024)
-	response.Body.Read(data_buffer)
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	DebugLog(string(bodyData))
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		fmt.Println(string(data_buffer))
+		fmt.Println(string(bodyData))
 		return errors.New("failed")
 	}
 
@@ -442,10 +461,12 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		fmt.Println("received StatusCode", response.StatusCode)
-		data_buffer := make([]byte, 2048)
-		response.Body.Read(data_buffer)
-		fmt.Println(string(data_buffer))
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+		fmt.Println(string(bodyData))
 		return errors.New("failed to download")
 	}
 
@@ -470,42 +491,161 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 //*************************************************************************************************
 //*************************************************************************************************
 
-// func (conn *GoogleDriveConnection) updateFile(id string, data []byte) error {
-// 	DebugLog("uploading data for remote file:", id)
+func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMetaData {
+	// TODO: may need to handle nextPageToken
 
-// 	// build the url
-// 	parameters := "?uploadType=media"
-// 	parameters += "&key=" + conn.api_key
-// 	url := "https://www.googleapis.com/upload/drive/v3/files/" + id + parameters
+	DebugLog("querying modified items for timestamp >", timestamp)
 
-// 	// for PATCH requests create a new request, then call the Do function
-// 	reader := bytes.NewReader(data)
-// 	req, err := http.NewRequestWithContext(conn.ctx, "PATCH", url, reader)
-// 	//req.Header.Add("Content-Type", "text/plain; charset=UTF-8")
-// 	req.Header.Add("Content-Type", "application/octet-stream") // let Google figure out the file type based on the file extension
-// 	if err != nil {
-// 		fmt.Println(err)
-// 		return err
-// 	}
+	parameters := "?q=" + url.QueryEscape("modifiedTime > '"+timestamp+"'")
+	parameters += "&fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
+	parameters += "&key=" + conn.api_key
 
-// 	response, err := conn.client.Do(req)
-// 	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
-// 	DebugLog("received StatusCode", response.StatusCode)
-// 	if err != nil {
-// 		fmt.Println(err)
-// 		return err
-// 	}
+	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
+	fmt.Println("Sent request:", response.Request.URL)
+	DebugLog("received StatusCode", response.StatusCode)
 
-// 	defer response.Body.Close()
-// 	data_buffer := make([]byte, 1024)
-// 	response.Body.Read(data_buffer)
+	if err != nil {
+		fmt.Println(err)
+		return []SearchMetaData{}
+	}
 
-// 	// if we didn't get what we were expecting, print out the response
-// 	if response.StatusCode >= 400 {
-// 		fmt.Println("received StatusCode", response.StatusCode)
-// 		fmt.Println(string(data_buffer))
-// 		return errors.New("failed")
-// 	}
+	defer response.Body.Close()
 
-// 	return nil
-// }
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(bodyData))
+		return []SearchMetaData{}
+	}
+
+	// decode the json data into our struct
+	var data SearchFilesResponse
+	err = json.NewDecoder(response.Body).Decode(&data)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	DebugLog(data.Files)
+	return data.Files
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) listFolderById(folderId string) {
+	DebugLog("listing folder", folderId)
+
+	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
+	parameters += "&key=" + conn.api_key
+	parameters += "&q=%27" + folderId + "%27%20in%20parents" // %27 is single quote, %20 is a space
+	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
+	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header)
+	DebugLog("received StatusCode", response.StatusCode)
+
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	defer response.Body.Close()
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(bodyData))
+		return
+	}
+
+	// decode the json data into our struct
+	var data ListFilesResponse
+	err = json.NewDecoder(response.Body).Decode(&data)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	DebugLog(data.Files)
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct() []FileMetaData {
+	DebugLog("listing files owned by service acct")
+
+	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
+	parameters += "&key=" + conn.api_key
+	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
+	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header)
+	DebugLog("received StatusCode", response.StatusCode)
+
+	if err != nil {
+		fmt.Println(err)
+		return []FileMetaData{}
+	}
+
+	defer response.Body.Close()
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		bodyData, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(bodyData))
+		return []FileMetaData{}
+	}
+
+	// decode the json data into our struct
+	var data ListFilesResponse
+	err = json.NewDecoder(response.Body).Decode(&data)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	DebugLog(data.Files)
+	return data.Files
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
+	DebugLog("deleting", item.Name, item.ID)
+
+	url := "https://www.googleapis.com/drive/v3/files/" + item.ID
+	req, err := http.NewRequestWithContext(conn.ctx, "DELETE", url, nil)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	response, err := conn.client.Do(req)
+	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
+	DebugLog("received StatusCode", response.StatusCode)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	defer response.Body.Close()
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	DebugLog(string(bodyData))
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		fmt.Println(string(bodyData))
+		return errors.New("failed")
+	}
+
+	return nil
+}

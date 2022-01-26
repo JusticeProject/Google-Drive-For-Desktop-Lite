@@ -23,8 +23,8 @@ var conn GoogleDriveConnection
 var localFiles map[string]bool = make(map[string]bool)
 var localToRemoteLookup map[string]FileMetaData = make(map[string]FileMetaData) // key=local file name
 
-var verifiedAt time.Time
-var checkedForDownloadsAt time.Time
+var verifiedAt time.Time = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
+var verifiedAtPlusHalfSec time.Time = verifiedAt
 var filesToUpload map[string]bool = make(map[string]bool)
 var filesToDownload map[string]FileMetaData = make(map[string]FileMetaData)
 
@@ -60,6 +60,17 @@ func walkAndFillLocal(path string, fileInfo os.FileInfo, err error) error {
 func fillLocalMap() {
 	for folder := range conn.baseFolders {
 		filepath.Walk(folder, walkAndFillLocal)
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func wipeServiceAcctFiles() {
+	//conn.listFolderById()
+	filesToDelete := conn.listFilesOwnedByServiceAcct()
+	for _, item := range filesToDelete {
+		conn.deleteFileOrFolder(item)
 	}
 }
 
@@ -105,24 +116,16 @@ func walkAndCheckForModified(path string, fileInfo os.FileInfo, err error) error
 //*************************************************************************************************
 //*************************************************************************************************
 
-func needToCheckForDownloads() bool {
-	now := time.Now()
-	diff := now.Sub(checkedForDownloadsAt)
-
+func remoteSideWasModified() bool {
 	// rate limits are:
 	//  Queries per 100 seconds	20,000
 	// Queries per day	1,000,000,000
 
-	// tODO: slow this down a bit
-	if diff.Seconds() > 100 {
-		DebugLog("It's been", diff.Seconds(), "since last check for download, will check again")
-		checkedForDownloadsAt = time.Now()
-		return true
-	} else {
-		DebugLog("Don't need to check for downloads")
-	}
+	DebugLog("checking if remote side was modified")
 
-	return false
+	timestamp := verifiedAtPlusHalfSec.UTC().Format(time.RFC3339)
+	files := conn.getModifiedItems(timestamp)
+	return len(files) > 0
 }
 
 //*************************************************************************************************
@@ -413,15 +416,18 @@ func main() {
 
 	conn.initializeGoogleDrive()
 	fillLocalMap()
+	//wipeServiceAcctFiles()
 
 	for {
+		conn.clearLookupMap()
+
 		// check if we need to upload anything
 		DebugLog("Checking for any new or modified local files/folders")
 		for folder := range conn.baseFolders {
 			filepath.Walk(folder, walkAndCheckForModified)
 		}
 
-		willCheckForDownloads := needToCheckForDownloads()
+		willCheckForDownloads := remoteSideWasModified()
 
 		// check if we need to refresh the lookup map
 		if willCheckForDownloads || len(filesToUpload) > 0 {
@@ -466,6 +472,7 @@ func main() {
 			if len(filesToUpload) == 0 && len(filesToDownload) == 0 {
 				DebugLog("verified! updating new verified timestamp to", verifyingAt)
 				verifiedAt = verifyingAt
+				verifiedAtPlusHalfSec = verifiedAt.Add(500 * time.Millisecond)
 				conn.clearLookupMap()
 			} else {
 				DebugLog("not verified, will try again next time")
