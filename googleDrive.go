@@ -430,7 +430,7 @@ func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime
 		fmt.Println(err)
 		return err
 	}
-	DebugLog(string(bodyData))
+	//DebugLog(string(bodyData))
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
@@ -501,7 +501,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMe
 	parameters += "&key=" + conn.api_key
 
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
-	fmt.Println("Sent request:", response.Request.URL)
+	//fmt.Println("Sent request:", response.Request.URL)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
@@ -528,7 +528,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMe
 		fmt.Println(err)
 	}
 
-	DebugLog(data.Files)
+	//DebugLog(data.Files)
 	return data.Files
 }
 

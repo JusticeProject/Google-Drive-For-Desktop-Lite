@@ -24,7 +24,7 @@ var localFiles map[string]bool = make(map[string]bool)
 var localToRemoteLookup map[string]FileMetaData = make(map[string]FileMetaData) // key=local file name
 
 var verifiedAt time.Time = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
-var verifiedAtPlusHalfSec time.Time = verifiedAt
+var verifiedAtPlusOneSec time.Time = verifiedAt
 var filesToUpload map[string]bool = make(map[string]bool)
 var filesToDownload map[string]FileMetaData = make(map[string]FileMetaData)
 
@@ -123,7 +123,7 @@ func remoteSideWasModified() bool {
 
 	DebugLog("checking if remote side was modified")
 
-	timestamp := verifiedAtPlusHalfSec.UTC().Format(time.RFC3339)
+	timestamp := verifiedAtPlusOneSec.UTC().Format(time.RFC3339)
 	files := conn.getModifiedItems(timestamp)
 	return len(files) > 0
 }
@@ -472,7 +472,7 @@ func main() {
 			if len(filesToUpload) == 0 && len(filesToDownload) == 0 {
 				DebugLog("verified! updating new verified timestamp to", verifyingAt)
 				verifiedAt = verifyingAt
-				verifiedAtPlusHalfSec = verifiedAt.Add(500 * time.Millisecond)
+				verifiedAtPlusOneSec = verifiedAt.Add(time.Second)
 				conn.clearLookupMap()
 			} else {
 				DebugLog("not verified, will try again next time")
