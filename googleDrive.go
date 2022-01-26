@@ -137,7 +137,7 @@ func (conn *GoogleDriveConnection) initializeGoogleDrive() {
 		conn.baseFolders[line_split[0]] = line_split[1]
 	}
 
-	DebugLog("these are our starting baseFolders:", conn.baseFolders)
+	fmt.Println("these are our starting baseFolders:", conn.baseFolders)
 }
 
 //*************************************************************************************************
@@ -575,35 +575,42 @@ func (conn *GoogleDriveConnection) listFolderById(folderId string) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct() []FileMetaData {
+func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []SearchMetaData {
 	DebugLog("listing files owned by service acct")
 
-	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
+	// TODO: implement nextPageToken
+
+	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	parameters += "&key=" + conn.api_key
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
-	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
 		fmt.Println(err)
-		return []FileMetaData{}
+		return []SearchMetaData{}
 	}
 
 	defer response.Body.Close()
 
+	// read the data
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
-		bodyData, err := io.ReadAll(response.Body)
-		if err != nil {
-			fmt.Println(err)
-		}
 		fmt.Println(string(bodyData))
-		return []FileMetaData{}
+		return []SearchMetaData{}
+	}
+
+	if verbose {
+		fmt.Println(string(bodyData))
 	}
 
 	// decode the json data into our struct
-	var data ListFilesResponse
-	err = json.NewDecoder(response.Body).Decode(&data)
+	var data SearchFilesResponse
+	err = json.Unmarshal(bodyData, &data)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -615,7 +622,7 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct() []FileMetaData 
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
+func (conn *GoogleDriveConnection) deleteFileOrFolder(item SearchMetaData) error {
 	DebugLog("deleting", item.Name, item.ID)
 
 	url := "https://www.googleapis.com/drive/v3/files/" + item.ID

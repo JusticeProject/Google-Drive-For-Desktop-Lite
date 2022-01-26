@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/md5"
 	"errors"
 	"fmt"
@@ -66,12 +67,58 @@ func fillLocalMap() {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func wipeServiceAcctFiles() {
-	//conn.listFolderById()
-	filesToDelete := conn.listFilesOwnedByServiceAcct()
-	for _, item := range filesToDelete {
-		conn.deleteFileOrFolder(item)
+func listServiceAcctFiles(folderId string) {
+	if len(folderId) > 0 {
+		conn.listFolderById(folderId)
+	} else {
+		conn.listFilesOwnedByServiceAcct(true)
 	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func wipeDeletedFiles(promptUser bool) {
+	if promptUser {
+		fmt.Println("\nAre you sure you want to wipe files belonging to the service account?")
+		fmt.Println("This only deletes files that are no longer in the user's shared folder.")
+		fmt.Println("Type Y then hit Enter to proceed.")
+
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "Y" {
+				break
+			} else {
+				fmt.Println("Aborting")
+				return
+			}
+		}
+	}
+
+	DebugLog("Proceeding to wipe files...")
+
+	// TODO: if there are any errors when filling the lookup map, then don't proceed!!
+	conn.fillLookupMap(conn.getBaseFolderSlice())
+
+	allServiceAcctFiles := conn.listFilesOwnedByServiceAcct(false)
+	for _, serviceFile := range allServiceAcctFiles {
+		needToDelete := true
+
+		// check if it's in one of the user's folders
+		for _, remoteMetaData := range localToRemoteLookup {
+			if len(serviceFile.Parents) == 0 || serviceFile.Parents[0] == remoteMetaData.ID {
+				needToDelete = false
+				break
+			}
+		}
+
+		if needToDelete {
+			conn.deleteFileOrFolder(serviceFile)
+		}
+	}
+
+	conn.clearLookupMap()
 }
 
 //*************************************************************************************************
@@ -409,14 +456,31 @@ func verifyDownloads() {
 //*************************************************************************************************
 
 func main() {
+	conn.initializeGoogleDrive()
+
 	// check if we need to print debug statements
 	if len(os.Args) > 1 {
-		debug = true
+		arg := os.Args[1]
+
+		switch arg {
+		case "debug":
+			debug = true
+		case "list":
+			if len(os.Args) > 2 {
+				debug = true
+				listServiceAcctFiles(os.Args[2])
+			} else {
+				listServiceAcctFiles("")
+			}
+			os.Exit(0)
+		case "wipe":
+			debug = true
+			wipeDeletedFiles(true)
+			os.Exit(0)
+		}
 	}
 
-	conn.initializeGoogleDrive()
 	fillLocalMap()
-	//wipeServiceAcctFiles()
 
 	for {
 		conn.clearLookupMap()
