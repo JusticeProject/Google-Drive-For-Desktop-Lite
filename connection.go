@@ -158,18 +158,32 @@ func (conn *GoogleDriveConnection) getBaseFolderSlice() []string {
 //*************************************************************************************************
 //*************************************************************************************************
 
+func (conn *GoogleDriveConnection) clearLookupMap() {
+	if len(localToRemoteLookup) > 0 {
+		localToRemoteLookup = make(map[string]FileMetaData)
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
 func (conn *GoogleDriveConnection) fillLookupMap(localFolders []string) {
 	for _, localFolder := range localFolders {
+		var folderId string
+
 		// if localFolder is a base folder and not in the lookupMap, then add it
 		baseId, isBaseFolder := conn.baseFolders[localFolder]
-		_, inLookupMap := localToRemoteLookup[localFolder]
+		remoteMetaData, inLookupMap := localToRemoteLookup[localFolder]
 		if isBaseFolder && !inLookupMap {
 			localToRemoteLookup[localFolder] = FileMetaData{ID: baseId}
+			folderId = baseId
+		} else if inLookupMap {
+			folderId = remoteMetaData.ID
 		}
 
-		data := conn.getItemsInSharedFolder(localFolder, "")
+		data := conn.getItemsInSharedFolder(localFolder, folderId, "")
 		for len(data.NextPageToken) > 0 {
-			newData := conn.getItemsInSharedFolder(localFolder, data.NextPageToken)
+			newData := conn.getItemsInSharedFolder(localFolder, folderId, data.NextPageToken)
 			data.Files = append(data.Files, newData.Files...)
 			data.NextPageToken = newData.NextPageToken
 		}
@@ -192,26 +206,79 @@ func (conn *GoogleDriveConnection) fillLookupMap(localFolders []string) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) clearLookupMap() {
-	if len(localToRemoteLookup) > 0 {
-		localToRemoteLookup = make(map[string]FileMetaData)
+func (conn *GoogleDriveConnection) clearUploadLookupMap() {
+	if len(uploadLookupMap) > 0 {
+		uploadLookupMap = make(map[string]FileMetaData)
 	}
 }
 
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string, nextPageToken string) ListFilesResponse {
+func localPathIsNeeded(localPath string, filesToUpload map[string]bool) bool {
+	// if there is one that does not result in .. then we need this path
+	for fileToUpload := range filesToUpload {
+		relativePath, err := filepath.Rel(localPath, fileToUpload)
+		if err == nil {
+			if !strings.Contains(relativePath, "..") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (conn *GoogleDriveConnection) fillUploadLookupMap(localFolders []string, filesToUpload map[string]bool) {
+	for _, localFolder := range localFolders {
+
+		// check if this localFolder is in the path of any of the filesToUpload
+		if !localPathIsNeeded(localFolder, filesToUpload) {
+			continue
+		}
+
+		var folderId string
+
+		// if localFolder is a base folder and not in the lookupMap, then add it
+		baseId, isBaseFolder := conn.baseFolders[localFolder]
+		remoteMetaData, inLookupMap := uploadLookupMap[localFolder]
+		if isBaseFolder && !inLookupMap {
+			uploadLookupMap[localFolder] = FileMetaData{ID: baseId}
+			folderId = baseId
+		} else if inLookupMap {
+			folderId = remoteMetaData.ID
+		}
+
+		data := conn.getItemsInSharedFolder(localFolder, folderId, "")
+		for len(data.NextPageToken) > 0 {
+			newData := conn.getItemsInSharedFolder(localFolder, folderId, data.NextPageToken)
+			data.Files = append(data.Files, newData.Files...)
+			data.NextPageToken = newData.NextPageToken
+		}
+
+		// add the files and folders to our map
+		for _, file := range data.Files {
+			uploadLookupMap[filepath.Join(localFolder, file.Name)] = file
+		}
+
+		// if any are folders then we will need to look up their contents as well, call this same function recursively
+		for _, file := range data.Files {
+			if strings.Contains(file.MimeType, "folder") {
+				foldersToLookup := []string{filepath.Join(localFolder, file.Name)}
+				conn.fillUploadLookupMap(foldersToLookup, filesToUpload)
+			}
+		}
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string, folderId string, nextPageToken string) ListFilesResponse {
 	if len(nextPageToken) == 0 {
 		DebugLog("getting items in shared folder", localFolderPath)
 	} else {
 		DebugLog("getting next page for folder", localFolderPath)
-	}
-
-	// if base folder then get it from map, otherwise get it from lookup
-	folderId, isBaseFolder := conn.baseFolders[localFolderPath]
-	if !isBaseFolder {
-		folderId = localToRemoteLookup[localFolderPath].ID
 	}
 
 	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
