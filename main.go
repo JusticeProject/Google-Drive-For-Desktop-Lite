@@ -23,7 +23,9 @@ var conn GoogleDriveConnection
 
 var localFiles map[string]bool = make(map[string]bool)
 var localToRemoteLookup map[string]FileMetaData = make(map[string]FileMetaData) // key=local file name
+
 var uploadLookupMap map[string]FileMetaData = make(map[string]FileMetaData)
+var downloadLookupMap map[string]FileMetaData = make(map[string]FileMetaData)
 
 var verifiedAt time.Time = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
 var verifiedAtPlusOneSec time.Time = verifiedAt
@@ -77,7 +79,7 @@ func listServiceAcctFiles(folderId string) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func wipeDeletedFiles(promptUser bool) {
+func removeDeletedFiles(promptUser bool) {
 	if promptUser {
 		fmt.Println("\nAre you sure you want to delete files belonging to the service account?")
 		fmt.Println("This only deletes files that are no longer in the user's shared folder.")
@@ -172,7 +174,7 @@ func checkForUploads(filesToUpload map[string]bool) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func remoteSideWasModified() bool {
+func getRemoteModifiedFiles() []FileMetaData {
 	// rate limits are:
 	//  Queries per 100 seconds	20,000
 	// Queries per day	1,000,000,000
@@ -181,14 +183,17 @@ func remoteSideWasModified() bool {
 
 	timestamp := verifiedAtPlusOneSec.UTC().Format(time.RFC3339)
 	files := conn.getModifiedItems(timestamp)
-	return len(files) > 0
+
+	DebugLog(len(files), "files were modified")
+
+	return files
 }
 
 //*************************************************************************************************
 //*************************************************************************************************
 
 func checkForDownloads(filesToDownload map[string]FileMetaData) {
-	for localPath, remoteFileInfo := range localToRemoteLookup {
+	for localPath, remoteFileInfo := range downloadLookupMap {
 		// first check if it already exists
 		localFileInfo, err := os.Stat(localPath)
 		if err != nil {
@@ -440,7 +445,7 @@ func verifyDownloads(filesToDownload map[string]FileMetaData) {
 	// according to the go spec, deleting keys while iterating over the map is allowed:
 	// https://go.dev/ref/spec#For_statements
 	for localPath := range filesToDownload {
-		remoteFileData := localToRemoteLookup[localPath]
+		remoteFileData := downloadLookupMap[localPath]
 
 		if strings.Contains(remoteFileData.MimeType, "folder") {
 			// it's a folder
@@ -482,7 +487,7 @@ func main() {
 			os.Exit(0)
 		case "delete":
 			debug = true
-			wipeDeletedFiles(true)
+			removeDeletedFiles(true)
 			os.Exit(0)
 		default:
 			fmt.Println("unknown arg", arg)
@@ -493,6 +498,7 @@ func main() {
 	fillLocalMap()
 	filesToUpload := make(map[string]bool)
 	filesToDownload := make(map[string]FileMetaData)
+	firstPass := true
 
 	for {
 		// check if we need to upload anything
@@ -509,11 +515,13 @@ func main() {
 
 		//***********************************************************
 
-		if remoteSideWasModified() {
+		// check if anything was modified on the remote shared drive
+		remoteModifiedFiles := getRemoteModifiedFiles()
+		if len(remoteModifiedFiles) > 0 {
 			// grab all the metadata for the files/folders that are currently on the remote shared drive
 			// because we need the ids of files/folders, timestamps, md5's, etc.
-			conn.clearLookupMap()
-			conn.fillLookupMap(conn.getBaseFolderSlice())
+			conn.clearDownloadLookupMap()
+			conn.fillDownloadLookupMap(remoteModifiedFiles, firstPass)
 
 			// check if we need to download anything
 			checkForDownloads(filesToDownload)
@@ -536,8 +544,8 @@ func main() {
 		if len(filesToDownload) > 0 {
 			DebugLog("Need to verify downloads. Grabbing remote metadata first.")
 			// again grab all the metadata for the files/folders that are currently on the remote shared drive
-			conn.clearLookupMap()
-			conn.fillLookupMap(conn.getBaseFolderSlice())
+			conn.clearDownloadLookupMap()
+			conn.fillDownloadLookupMap(remoteModifiedFiles, firstPass)
 		}
 
 		// do a verify if we uploaded or downloaded anything
@@ -555,7 +563,8 @@ func main() {
 				verifiedAt = verifyingAt
 				verifiedAtPlusOneSec = verifiedAt.Add(time.Second)
 				conn.clearUploadLookupMap()
-				conn.clearLookupMap()
+				conn.clearDownloadLookupMap()
+				firstPass = false
 			} else {
 				DebugLog("not verified, will try again next time")
 			}

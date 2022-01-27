@@ -38,23 +38,6 @@ type GoogleDriveConnection struct {
 // these structs match the data that is received from Google Drive API, the json decoder will fill in these structs
 type FileMetaData struct {
 	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	MimeType     string `json:"mimeType"`
-	ModifiedTime string `json:"modifiedTime"` // "modifiedTime": "2022-01-22T18:32:04.223Z"
-	Md5Checksum  string `json:"md5Checksum"`
-	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
-}
-
-type ListFilesResponse struct {
-	NextPageToken string         `json:"nextPageToken"`
-	Files         []FileMetaData `json:"files"`
-}
-
-//*********************************************************
-
-type SearchMetaData struct {
-	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
 	MimeType     string   `json:"mimeType"`
@@ -64,9 +47,9 @@ type SearchMetaData struct {
 	// NOTE!!** if updating this then be sure to update the parameters when sending the GET request
 }
 
-type SearchFilesResponse struct {
-	NextPageToken string           `json:"nextPageToken"`
-	Files         []SearchMetaData `json:"files"`
+type ListFilesResponse struct {
+	NextPageToken string         `json:"nextPageToken"`
+	Files         []FileMetaData `json:"files"`
 }
 
 //*********************************************************
@@ -274,6 +257,103 @@ func (conn *GoogleDriveConnection) fillUploadLookupMap(localFolders []string, fi
 //*************************************************************************************************
 //*************************************************************************************************
 
+func (conn *GoogleDriveConnection) clearDownloadLookupMap() {
+	if len(downloadLookupMap) > 0 {
+		downloadLookupMap = make(map[string]FileMetaData)
+	}
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) fillDownloadLookupMap(remoteModifiedFiles []FileMetaData, skipExtraFolderSearch bool) {
+	tempIdToMetaData := make(map[string]FileMetaData) // key = id, value = metadata
+
+	// add the known base folders to the temp map and download lookup map
+	for folderName, id := range conn.baseFolders {
+		tempIdToMetaData[id] = FileMetaData{ID: id}
+		downloadLookupMap[folderName] = FileMetaData{ID: id}
+	}
+
+	// add all the modified files/folders to our temp map, and the parents if necessary
+	for _, remoteMetaData := range remoteModifiedFiles {
+		tempIdToMetaData[remoteMetaData.ID] = remoteMetaData
+
+		if !skipExtraFolderSearch && strings.Contains(remoteMetaData.MimeType, "folder") {
+			response := conn.getItemsInSharedFolder(remoteMetaData.Name, remoteMetaData.ID, "")
+			for _, metadata := range response.Files {
+				tempIdToMetaData[metadata.ID] = metadata
+			}
+		}
+
+		// add all the parents recursively
+		// TODO: if it fails then return an error from this function so we can try again next time, don't want to download the wrong paths, or will
+		// getFullPath handle it by not finding a link from the file all the way up to the base folder?
+		conn.addParents(remoteMetaData, tempIdToMetaData)
+	}
+
+	// now piece together all the modified items by using the parent ids to create the file hierarchy
+	for id, metadata := range tempIdToMetaData {
+		fullPath, err := conn.getFullPath(id, tempIdToMetaData)
+		if fullPath != "" && err == nil {
+			downloadLookupMap[fullPath] = metadata
+		}
+	}
+}
+
+//***********************************************
+
+func (conn *GoogleDriveConnection) addParents(metadata FileMetaData, tempIdToMetaData map[string]FileMetaData) {
+	if len(metadata.Parents) > 0 {
+		parentId := metadata.Parents[0]
+		_, parentInMap := tempIdToMetaData[parentId]
+
+		if parentId != "" && !parentInMap {
+			parentMetadata, err := conn.getMetadataById("?", parentId)
+			if err != nil {
+				return
+			}
+			tempIdToMetaData[parentMetadata.ID] = parentMetadata
+			conn.addParents(parentMetadata, tempIdToMetaData)
+		}
+	}
+}
+
+//***********************************************
+
+func (conn *GoogleDriveConnection) getFullPath(id string, tempIdToMetaData map[string]FileMetaData) (string, error) {
+	metadata, inMap := tempIdToMetaData[id]
+
+	if inMap {
+		if len(metadata.Parents) > 0 {
+			parentPath, err := conn.getFullPath(metadata.Parents[0], tempIdToMetaData)
+			if err != nil {
+				return "", err
+			}
+
+			if parentPath == "" {
+				return "", errors.New("something went wrong")
+			} else {
+				fullPath := parentPath + string(filepath.Separator) + metadata.Name
+				return fullPath, nil
+			}
+		} else {
+			// check if this is a base folder
+			for baseFolderName, baseFolderId := range conn.baseFolders {
+				if id == baseFolderId {
+					return baseFolderName, nil
+				}
+			}
+			return "", errors.New("no base folder found")
+		}
+	}
+	return "", errors.New("id was not found")
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+// TODO: should I handle the token entirely within this function or a helper function so the caller doesn't have to deal with it?
 func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string, folderId string, nextPageToken string) ListFilesResponse {
 	if len(nextPageToken) == 0 {
 		DebugLog("getting items in shared folder", localFolderPath)
@@ -281,8 +361,7 @@ func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string
 		DebugLog("getting next page for folder", localFolderPath)
 	}
 
-	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
-	//parameters += "&pageSize=100"
+	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	if len(nextPageToken) > 0 {
 		parameters += "&pageToken=" + nextPageToken
 	}
@@ -317,6 +396,46 @@ func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath string
 	}
 
 	return data
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (FileMetaData, error) {
+	DebugLog("getting metadata for", name, id)
+
+	parameters := "?fields=" + url.QueryEscape("id,name,mimeType,modifiedTime,md5Checksum,parents")
+	parameters += "&key=" + conn.api_key
+	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files/" + id + parameters)
+	DebugLog("received StatusCode", response.StatusCode)
+
+	if err != nil {
+		fmt.Println(err)
+		return FileMetaData{}, err
+	}
+
+	defer response.Body.Close()
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return FileMetaData{}, err
+	}
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		fmt.Println(string(bodyData))
+		return FileMetaData{}, errors.New("failed to download")
+	}
+
+	var data FileMetaData
+	err = json.Unmarshal(bodyData, &data)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	DebugLog(data)
+
+	return data, err
 }
 
 //*************************************************************************************************
@@ -544,7 +663,6 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 	}
 
 	defer fh.Close()
-	defer response.Body.Close()
 	n, err := io.Copy(fh, response.Body)
 	DebugLog(fmt.Sprintf("Wrote %v bytes to file", n))
 	if err != nil {
@@ -558,7 +676,7 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMetaData {
+func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []FileMetaData {
 	// TODO: may need to handle nextPageToken
 
 	DebugLog("querying modified items for timestamp >", timestamp)
@@ -573,7 +691,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMe
 
 	if err != nil {
 		fmt.Println(err)
-		return []SearchMetaData{}
+		return []FileMetaData{}
 	}
 
 	defer response.Body.Close()
@@ -585,11 +703,11 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMe
 			fmt.Println(err)
 		}
 		fmt.Println(string(bodyData))
-		return []SearchMetaData{}
+		return []FileMetaData{}
 	}
 
 	// decode the json data into our struct
-	var data SearchFilesResponse
+	var data ListFilesResponse
 	err = json.NewDecoder(response.Body).Decode(&data)
 	if err != nil {
 		fmt.Println(err)
@@ -605,7 +723,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []SearchMe
 func (conn *GoogleDriveConnection) listFolderById(folderId string) {
 	DebugLog("listing folder", folderId)
 
-	parameters := "?fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2CmodifiedTime%2Cmd5Checksum)" // %2C is a comma
+	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	parameters += "&key=" + conn.api_key
 	parameters += "&q=%27" + folderId + "%27%20in%20parents" // %27 is single quote, %20 is a space
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
@@ -642,7 +760,7 @@ func (conn *GoogleDriveConnection) listFolderById(folderId string) {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []SearchMetaData {
+func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []FileMetaData {
 	DebugLog("listing files owned by service acct")
 
 	// TODO: implement nextPageToken
@@ -654,7 +772,7 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []S
 
 	if err != nil {
 		fmt.Println(err)
-		return []SearchMetaData{}
+		return []FileMetaData{}
 	}
 
 	defer response.Body.Close()
@@ -668,7 +786,7 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []S
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
 		fmt.Println(string(bodyData))
-		return []SearchMetaData{}
+		return []FileMetaData{}
 	}
 
 	if verbose {
@@ -676,7 +794,7 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []S
 	}
 
 	// decode the json data into our struct
-	var data SearchFilesResponse
+	var data ListFilesResponse
 	err = json.Unmarshal(bodyData, &data)
 	if err != nil {
 		fmt.Println(err)
@@ -689,7 +807,7 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []S
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) deleteFileOrFolder(item SearchMetaData) error {
+func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
 	DebugLog("deleting", item.Name, item.ID)
 
 	url := "https://www.googleapis.com/drive/v3/files/" + item.ID
