@@ -26,6 +26,9 @@ type GoogleDriveService struct {
 	filesToDownload   map[string]FileMetaData
 	uploadLookupMap   map[string]FileMetaData
 	downloadLookupMap map[string]FileMetaData
+
+	verifiedAt              time.Time
+	mostRecentTimestampSeen time.Time
 }
 
 //*************************************************************************************************
@@ -62,6 +65,31 @@ func (service *GoogleDriveService) initializeService() {
 	service.filesToDownload = make(map[string]FileMetaData)
 	service.uploadLookupMap = make(map[string]FileMetaData)
 	service.downloadLookupMap = make(map[string]FileMetaData)
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (service *GoogleDriveService) resetVerifiedTime() {
+	service.verifiedAt = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (service *GoogleDriveService) setVerifiedTime() {
+	service.verifiedAt = service.mostRecentTimestampSeen
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (service *GoogleDriveService) saveTimestamp(timestamp time.Time) {
+	// always keep the newest timestamp
+	diff := timestamp.Sub(service.mostRecentTimestampSeen)
+	if diff > 0 {
+		service.mostRecentTimestampSeen = timestamp
+	}
 }
 
 //*************************************************************************************************
@@ -248,8 +276,7 @@ func (service *GoogleDriveService) fillDownloadLookupMap(remoteModifiedFiles []F
 		}
 
 		// add all the parents recursively
-		// TODO: if it fails then return an error from this function so we can try again next time, don't want to download the wrong paths, or will
-		// getFullPath handle it by not finding a link from the file all the way up to the base folder?
+		// if it fails then return an error from this function so we can try again next time, don't want to download the wrong paths
 		err := service.addParents(remoteMetaData, tempIdToMetaData)
 		if err != nil {
 			return err
@@ -341,7 +368,7 @@ func getMd5OfFile(path string) string {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) localFilesModified(verifiedAt *time.Time) bool {
+func (service *GoogleDriveService) localFilesModified() bool {
 	// use a closure to give the walk function access to filesToUpload and localFiles
 
 	// this is the callback function that Walk will call for each local file/folder
@@ -360,21 +387,23 @@ func (service *GoogleDriveService) localFilesModified(verifiedAt *time.Time) boo
 			return nil
 		}
 
+		modifiedAt := fileInfo.ModTime()
+
 		// if file shows up locally that was not there before
 		_, inLocalMap := service.localFiles[path]
 		if !inLocalMap {
 			DebugLog(path, "suddenly appeared")
 			service.filesToUpload[path] = true
 			service.localFiles[path] = true
+			service.saveTimestamp(modifiedAt)
 			return nil
 		}
 
-		modifiedAt := fileInfo.ModTime()
-		diff := modifiedAt.Sub(*verifiedAt)
-
-		if diff > 0 {
+		timestampDiff := modifiedAt.Sub(service.verifiedAt)
+		if timestampDiff > 0 {
 			DebugLog(path, "has changed")
 			service.filesToUpload[path] = true
+			service.saveTimestamp(modifiedAt)
 			return nil
 		}
 
@@ -392,19 +421,30 @@ func (service *GoogleDriveService) localFilesModified(verifiedAt *time.Time) boo
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) getRemoteModifiedFiles(verifiedAtPlusOneSec *time.Time) []FileMetaData {
+func (service *GoogleDriveService) getRemoteModifiedFiles() ([]FileMetaData, error) {
 	// rate limits are:
-	//  Queries per 100 seconds	20,000
+	// Queries per 100 seconds	20,000
 	// Queries per day	1,000,000,000
 
 	DebugLog("checking if remote side was modified")
 
-	timestamp := verifiedAtPlusOneSec.UTC().Format(time.RFC3339)
-	files := service.conn.getModifiedItems(timestamp)
+	timestamp := service.verifiedAt.UTC().Format(time.RFC3339)
+	files, err := service.conn.getModifiedItems(timestamp)
+	if err != nil {
+		return []FileMetaData{}, err
+	}
 
 	DebugLog(len(files), "files were modified")
 
-	return files
+	// save the newest timestamp that we see
+	for _, file := range files {
+		modifiedAt, err := time.Parse(time.RFC3339Nano, file.ModifiedTime)
+		if err == nil {
+			service.saveTimestamp(modifiedAt)
+		}
+	}
+
+	return files, nil
 }
 
 //*************************************************************************************************

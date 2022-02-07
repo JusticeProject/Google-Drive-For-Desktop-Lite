@@ -96,8 +96,6 @@ func main() {
 	service.fillLocalMap()
 
 	var verified bool = false
-	var verifiedAt time.Time
-	var verifiedAtPlusOneSec time.Time
 	const SLEEP_SECONDS time.Duration = 20 // TODO: slow it down a bit?
 	firstPass := true
 
@@ -108,8 +106,7 @@ func main() {
 		firstPass = false
 
 		if !verified {
-			verifiedAt = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
-			verifiedAtPlusOneSec = verifiedAt
+			service.resetVerifiedTime()
 		}
 
 		//***********************************************************
@@ -118,8 +115,7 @@ func main() {
 
 		// check if we need to upload anything
 		DebugLog("Checking for any new or modified local files/folders")
-		somethingWasUploaded := false
-		localModified := service.localFilesModified(&verifiedAt)
+		localModified := service.localFilesModified()
 
 		// do the upload
 		if localModified {
@@ -129,7 +125,7 @@ func main() {
 			if err != nil {
 				continue
 			}
-			somethingWasUploaded = service.handleUploads()
+			service.handleUploads()
 		}
 
 		//***********************************************************
@@ -137,7 +133,10 @@ func main() {
 		// download section
 
 		// check if anything was modified on the remote shared drive
-		remoteModifiedFiles := service.getRemoteModifiedFiles(&verifiedAtPlusOneSec)
+		remoteModifiedFiles, err := service.getRemoteModifiedFiles()
+		if err != nil {
+			continue
+		}
 		if len(remoteModifiedFiles) > 0 {
 			// grab all the metadata for the files/folders that are currently on the remote shared drive
 			// because we need the ids of files/folders, timestamps, md5's, etc.
@@ -152,26 +151,9 @@ func main() {
 		}
 
 		// do the download or re-download if it was not verified from the last loop
-		somethingWasDownloaded := false
 		if len(service.filesToDownload) > 0 {
 			DebugLog("Preparing to download files")
-			somethingWasDownloaded = service.handleDownloads()
-		}
-
-		//***********************************************************
-
-		// The reason this section is here is because there was a race condition when creating multiple things
-		// locally or remotely. One of the items would be downloaded, the verified time was updated, but the second
-		// item was never downloaded. This forces a full check for more uploads/downloads and then it will verify
-		// everything. This alone is not enough to address the race condition. We'll also use the timestamps later on.
-
-		// TODO: this kinda negates the efficient upload/download lookup maps, doesn't it?
-
-		if somethingWasUploaded || somethingWasDownloaded {
-			DebugLog("Something was uploaded or downloaded, will do another pass before verifying")
-			time.Sleep(SLEEP_SECONDS * time.Second)
-			verified = false
-			continue
+			service.handleDownloads()
 		}
 
 		//***********************************************************
@@ -199,8 +181,6 @@ func main() {
 
 		// do a verify if we uploaded or downloaded anything
 		if len(service.filesToUpload) > 0 || len(service.filesToDownload) > 0 {
-			verifyingAt := time.Now() // TODO: this needs to be the timestamp of the most recent item that was changed
-
 			// verify local files were uploaded to the remote server
 			service.verifyUploads()
 
@@ -208,9 +188,8 @@ func main() {
 			service.verifyDownloads()
 
 			if len(service.filesToUpload) == 0 && len(service.filesToDownload) == 0 {
-				DebugLog("verified! updating new verified timestamp to", verifyingAt)
-				verifiedAt = verifyingAt
-				verifiedAtPlusOneSec = verifiedAt.Add(time.Second)
+				DebugLog("verified! updating new verified timestamp to", service.mostRecentTimestampSeen)
+				service.setVerifiedTime()
 				service.clearUploadLookupMap()
 				service.clearDownloadLookupMap()
 				verified = true

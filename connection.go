@@ -446,12 +446,13 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []FileMetaData {
+func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) ([]FileMetaData, error) {
 	// TODO: may need to handle nextPageToken
 
 	DebugLog("querying modified items for timestamp >", timestamp)
 
 	parameters := "?q=" + url.QueryEscape("modifiedTime > '"+timestamp+"'")
+	parameters += "&pageSize=1000"
 	parameters += "&fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	parameters += "&key=" + conn.api_key
 
@@ -461,7 +462,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []FileMeta
 
 	if err != nil {
 		fmt.Println(err)
-		return []FileMetaData{}
+		return []FileMetaData{}, err
 	}
 
 	defer response.Body.Close()
@@ -471,9 +472,10 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []FileMeta
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
 			fmt.Println(err)
+			return []FileMetaData{}, err
 		}
 		fmt.Println(string(bodyData))
-		return []FileMetaData{}
+		return []FileMetaData{}, errors.New("unexpected response when getting modified items")
 	}
 
 	// decode the json data into our struct
@@ -481,10 +483,11 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) []FileMeta
 	err = json.NewDecoder(response.Body).Decode(&data)
 	if err != nil {
 		fmt.Println(err)
+		return []FileMetaData{}, err
 	}
 
 	//DebugLog(data.Files)
-	return data.Files
+	return data.Files, nil
 }
 
 //*************************************************************************************************
