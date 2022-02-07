@@ -104,7 +104,7 @@ func main() {
 	service.fillLocalMap()
 
 	var verified bool = false
-	const SLEEP_SECONDS time.Duration = 20 // TODO: slow it down a bit?
+	const SLEEP_SECONDS time.Duration = 30
 	firstPass := true
 
 	for {
@@ -209,6 +209,16 @@ func main() {
 			} else {
 				DebugLog("not verified, will try again next time")
 			}
+		}
+
+		//***********************************************************
+
+		// cleanup and re-verify section, if it's been more than 14 hours
+
+		if service.hoursSinceVerified() > 14 {
+			fmt.Println("cleaning up at", time.Now())
+			removeDeletedFiles(&service, false)
+			verified = false
 		}
 	}
 }

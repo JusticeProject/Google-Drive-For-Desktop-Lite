@@ -28,6 +28,7 @@ type GoogleDriveService struct {
 	downloadLookupMap map[string]FileMetaData
 
 	verifiedAt              time.Time
+	verifiedAtPlusOneSec    time.Time
 	mostRecentTimestampSeen time.Time
 }
 
@@ -72,6 +73,7 @@ func (service *GoogleDriveService) initializeService() {
 
 func (service *GoogleDriveService) resetVerifiedTime() {
 	service.verifiedAt = time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
+	service.verifiedAtPlusOneSec = service.verifiedAt
 }
 
 //*************************************************************************************************
@@ -79,6 +81,16 @@ func (service *GoogleDriveService) resetVerifiedTime() {
 
 func (service *GoogleDriveService) setVerifiedTime() {
 	service.verifiedAt = service.mostRecentTimestampSeen
+	service.verifiedAtPlusOneSec = service.verifiedAt.Add(time.Second)
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (service *GoogleDriveService) hoursSinceVerified() float64 {
+	now := time.Now()
+	diff := now.Sub(service.verifiedAt)
+	return diff.Hours()
 }
 
 //*************************************************************************************************
@@ -428,7 +440,7 @@ func (service *GoogleDriveService) getRemoteModifiedFiles() ([]FileMetaData, err
 
 	DebugLog("checking if remote side was modified")
 
-	timestamp := service.verifiedAt.UTC().Format(time.RFC3339)
+	timestamp := service.verifiedAtPlusOneSec.UTC().Format(time.RFC3339)
 	files, err := service.conn.getModifiedItems(timestamp)
 	if err != nil {
 		return []FileMetaData{}, err
