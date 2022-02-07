@@ -43,7 +43,11 @@ func removeDeletedFiles(service *GoogleDriveService, promptUser bool) {
 		return
 	}
 
-	allServiceAcctFiles := service.conn.listFilesOwnedByServiceAcct(false)
+	allServiceAcctFiles, err := service.conn.getFilesOwnedByServiceAcct(false)
+	if err != nil {
+		fmt.Println("failed to getFilesOwnedByServiceAcct, not removing the deleted files")
+		return
+	}
 	for _, serviceFile := range allServiceAcctFiles {
 		needToDelete := true
 
@@ -78,9 +82,13 @@ func main() {
 		case "list":
 			if len(os.Args) > 2 {
 				debug = true
-				service.conn.listFolderById(os.Args[2])
+				resp, err := service.conn.getItemsInSharedFolder("?", os.Args[2])
+				fmt.Println("err", err)
+				for _, file := range resp.Files {
+					fmt.Println(file)
+				}
 			} else {
-				service.conn.listFilesOwnedByServiceAcct(true)
+				service.conn.getFilesOwnedByServiceAcct(true)
 			}
 			os.Exit(0)
 		case "delete":
@@ -125,7 +133,12 @@ func main() {
 			if err != nil {
 				continue
 			}
-			service.handleUploads()
+			err = service.handleUploads()
+			if err != nil {
+				// if we only uploaded half a file then we don't want to download that half-written file,
+				// so we will try again from the beginning of the loop
+				continue
+			}
 		}
 
 		//***********************************************************

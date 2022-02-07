@@ -68,10 +68,11 @@ type CreateFileRequest struct {
 }
 
 type CreateFolderRequest struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	MimeType string   `json:"mimeType"`
-	Parents  []string `json:"parents"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	MimeType     string   `json:"mimeType"`
+	Parents      []string `json:"parents"`
+	ModifiedTime string   `json:"modifiedTime"`
 }
 
 //*************************************************************************************************
@@ -194,7 +195,7 @@ func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (File
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
 		fmt.Println(string(bodyData))
-		return FileMetaData{}, errors.New("failed to download")
+		return FileMetaData{}, errors.New("failed to get metadata by ID")
 	}
 
 	var data FileMetaData
@@ -432,13 +433,19 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 		return err
 	}
 
-	defer fh.Close()
 	n, err := io.Copy(fh, response.Body)
 	DebugLog(fmt.Sprintf("Wrote %v bytes to file", n))
 	if err != nil {
 		fmt.Println(err)
+
+		// if we only downloaded half the file, remove the local file so we don't upload the half file later on
+		fh.Close()
+		os.Remove(localFileName)
+
 		return err
 	}
+
+	fh.Close()
 
 	return nil
 }
@@ -447,22 +454,42 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) ([]FileMetaData, error) {
-	// TODO: may need to handle nextPageToken
+	data, err := conn.getPageOfModifiedItems(timestamp, "")
+	if err != nil {
+		return []FileMetaData{}, err
+	}
 
-	DebugLog("querying modified items for timestamp >", timestamp)
+	for len(data.NextPageToken) > 0 {
+		newData, err := conn.getPageOfModifiedItems(timestamp, data.NextPageToken)
+		if err != nil {
+			return []FileMetaData{}, err
+		}
+		data.Files = append(data.Files, newData.Files...)
+		data.NextPageToken = newData.NextPageToken
+	}
+
+	return data.Files, nil
+}
+
+//*********************************************************
+
+func (conn *GoogleDriveConnection) getPageOfModifiedItems(timestamp, nextPageToken string) (ListFilesResponse, error) {
+	DebugLog("getting page of modified items for timestamp >", timestamp)
 
 	parameters := "?q=" + url.QueryEscape("modifiedTime > '"+timestamp+"'")
 	parameters += "&pageSize=1000"
+	if len(nextPageToken) > 0 {
+		parameters += "&pageToken=" + nextPageToken
+	}
 	parameters += "&fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	parameters += "&key=" + conn.api_key
 
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
-	//fmt.Println("Sent request:", response.Request.URL)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
 		fmt.Println(err)
-		return []FileMetaData{}, err
+		return ListFilesResponse{}, err
 	}
 
 	defer response.Body.Close()
@@ -472,10 +499,10 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) ([]FileMet
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
 			fmt.Println(err)
-			return []FileMetaData{}, err
+			return ListFilesResponse{}, err
 		}
 		fmt.Println(string(bodyData))
-		return []FileMetaData{}, errors.New("unexpected response when getting modified items")
+		return ListFilesResponse{}, errors.New("unexpected response when getting modified items")
 	}
 
 	// decode the json data into our struct
@@ -483,71 +510,49 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) ([]FileMet
 	err = json.NewDecoder(response.Body).Decode(&data)
 	if err != nil {
 		fmt.Println(err)
+		return ListFilesResponse{}, err
+	}
+
+	return data, nil
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) getFilesOwnedByServiceAcct(verbose bool) ([]FileMetaData, error) {
+	data, err := conn.getPageOfFilesOwnedByServiceAcct(verbose, "")
+	if err != nil {
 		return []FileMetaData{}, err
 	}
 
-	//DebugLog(data.Files)
+	for len(data.NextPageToken) > 0 {
+		newData, err := conn.getPageOfFilesOwnedByServiceAcct(verbose, data.NextPageToken)
+		if err != nil {
+			return []FileMetaData{}, err
+		}
+		data.Files = append(data.Files, newData.Files...)
+		data.NextPageToken = newData.NextPageToken
+	}
+
 	return data.Files, nil
 }
 
-//*************************************************************************************************
-//*************************************************************************************************
+//*********************************************************
 
-func (conn *GoogleDriveConnection) listFolderById(folderId string) {
-	DebugLog("listing folder", folderId)
-
-	// TODO: do I need to implement nextPageToken? This function is for command line debugging
+func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool, nextPageToken string) (ListFilesResponse, error) {
+	DebugLog("getting page of files owned by service acct")
 
 	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
-	parameters += "&key=" + conn.api_key
-	parameters += "&q=%27" + folderId + "%27%20in%20parents" // %27 is single quote, %20 is a space
-	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
-	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header)
-	DebugLog("received StatusCode", response.StatusCode)
-
-	if err != nil {
-		fmt.Println(err)
-		return
+	if len(nextPageToken) > 0 {
+		parameters += "&pageToken=" + nextPageToken
 	}
-
-	defer response.Body.Close()
-
-	// if we didn't get what we were expecting, print out the response
-	if response.StatusCode >= 400 {
-		bodyData, err := io.ReadAll(response.Body)
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println(string(bodyData))
-		return
-	}
-
-	// decode the json data into our struct
-	var data ListFilesResponse
-	err = json.NewDecoder(response.Body).Decode(&data)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	DebugLog(data.Files)
-}
-
-//*************************************************************************************************
-//*************************************************************************************************
-
-func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []FileMetaData {
-	DebugLog("listing files owned by service acct")
-
-	// TODO: implement nextPageToken
-
-	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
 	parameters += "&key=" + conn.api_key
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
 		fmt.Println(err)
-		return []FileMetaData{}
+		return ListFilesResponse{}, err
 	}
 
 	defer response.Body.Close()
@@ -556,12 +561,13 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []F
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
 		fmt.Println(err)
+		return ListFilesResponse{}, err
 	}
 
 	// if we didn't get what we were expecting, print out the response
 	if response.StatusCode >= 400 {
 		fmt.Println(string(bodyData))
-		return []FileMetaData{}
+		return ListFilesResponse{}, errors.New("received unexpected response when getting page of files owned by service acct")
 	}
 
 	if verbose {
@@ -573,10 +579,11 @@ func (conn *GoogleDriveConnection) listFilesOwnedByServiceAcct(verbose bool) []F
 	err = json.Unmarshal(bodyData, &data)
 	if err != nil {
 		fmt.Println(err)
+		return ListFilesResponse{}, err
 	}
 
 	DebugLog(data.Files)
-	return data.Files
+	return data, nil
 }
 
 //*************************************************************************************************

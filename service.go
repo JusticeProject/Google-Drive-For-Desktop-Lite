@@ -435,6 +435,7 @@ func (service *GoogleDriveService) getRemoteModifiedFiles() ([]FileMetaData, err
 	}
 
 	DebugLog(len(files), "files were modified")
+	DebugLog(files)
 
 	// save the newest timestamp that we see
 	for _, file := range files {
@@ -556,8 +557,10 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 	}
 	parents := []string{parentId.ID}
 
+	formattedTime := modifiedTime.Format(time.RFC3339Nano)
+
 	if isDir {
-		request := CreateFolderRequest{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Parents: parents}
+		request := CreateFolderRequest{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Parents: parents, ModifiedTime: formattedTime}
 		err := service.conn.createRemoteFolder(request)
 		if err != nil {
 			fmt.Println(err)
@@ -566,7 +569,6 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 			service.uploadLookupMap[localPath] = FileMetaData{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Md5Checksum: ""}
 		}
 	} else {
-		formattedTime := modifiedTime.Format(time.RFC3339Nano)
 		request := CreateFileRequest{ID: ids[0], Name: fileName, Parents: parents, ModifiedTime: formattedTime}
 		fileData, _ := os.ReadFile(localPath)
 		err := service.conn.createRemoteFile(request, fileData)
@@ -603,8 +605,7 @@ func (service *GoogleDriveService) handleSingleUpload(localPath string, modified
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) handleUploads() bool {
-	somethingWasUploaded := false
+func (service *GoogleDriveService) handleUploads() error {
 	allLocalFileInfo := make(map[string]os.FileInfo)
 
 	// need to do the folders first, start by collecting the folders and sorting them by the shortest path length
@@ -634,10 +635,9 @@ func (service *GoogleDriveService) handleUploads() bool {
 			folderName := filepath.Base(localPath)
 			localFileData := allLocalFileInfo[localPath]
 			err := service.handleCreate(localPath, true, folderName, localFileData.ModTime())
-			if err == nil {
-				somethingWasUploaded = true
-			} else {
+			if err != nil {
 				fmt.Println(err)
+				return err
 			}
 		}
 	}
@@ -656,10 +656,9 @@ func (service *GoogleDriveService) handleUploads() bool {
 
 			// create file
 			err := service.handleCreate(localPath, localFileInfo.IsDir(), localFileInfo.Name(), localFileInfo.ModTime())
-			if err == nil {
-				somethingWasUploaded = true
-			} else {
+			if err != nil {
 				fmt.Println(err)
+				return err
 			}
 		} else {
 			localModTime := localFileInfo.ModTime()
@@ -676,15 +675,16 @@ func (service *GoogleDriveService) handleUploads() bool {
 					DebugLog("md5's do not match", localMd5, remoteFileData.Md5Checksum)
 					DebugLog("local mod time is newer", localModTime, remoteModTime)
 					err := service.handleSingleUpload(localPath, localFileInfo.ModTime())
-					if err == nil {
-						somethingWasUploaded = true
+					if err != nil {
+						fmt.Println(err)
+						return err
 					}
 				}
 			}
 		}
 	}
 
-	return somethingWasUploaded
+	return nil
 }
 
 //*************************************************************************************************
