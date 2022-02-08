@@ -1,4 +1,6 @@
 .vscode/
 test/
+logs/
+results/
 go.sum
 Google-Drive-For-Desktop-Lite.exe

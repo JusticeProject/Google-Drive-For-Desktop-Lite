@@ -22,10 +22,11 @@ import (
 //*************************************************************************************************
 
 type GoogleDriveConnection struct {
-	conf    *jwt.Config
-	client  *http.Client
-	api_key string
-	ctx     context.Context
+	conf        *jwt.Config
+	client      *http.Client
+	api_key     string
+	ctx         context.Context
+	numApiCalls int64
 }
 
 //*************************************************************************************************
@@ -126,6 +127,8 @@ func (conn *GoogleDriveConnection) getItemsInSharedFolder(localFolderPath, folde
 //*********************************************************
 
 func (conn *GoogleDriveConnection) getPageInSharedFolder(localFolderPath, folderId, nextPageToken string) (ListFilesResponse, error) {
+	conn.numApiCalls++
+
 	if len(nextPageToken) == 0 {
 		DebugLog("getting first page in shared folder", localFolderPath)
 	} else {
@@ -173,6 +176,7 @@ func (conn *GoogleDriveConnection) getPageInSharedFolder(localFolderPath, folder
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (FileMetaData, error) {
+	conn.numApiCalls++
 	DebugLog("getting metadata for", name, id)
 
 	parameters := "?fields=" + url.QueryEscape("id,name,mimeType,modifiedTime,md5Checksum,parents")
@@ -213,6 +217,7 @@ func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (File
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) generateIds(count int) []string {
+	conn.numApiCalls++
 	DebugLog("generating ids with count:", count)
 
 	parameters := "?count=" + fmt.Sprintf("%v", count)
@@ -251,6 +256,7 @@ func (conn *GoogleDriveConnection) generateIds(count int) []string {
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) createRemoteFolder(folderRequest CreateFolderRequest) error {
+	conn.numApiCalls++
 	DebugLog("creating remote folder:", folderRequest)
 
 	data, _ := json.Marshal(folderRequest)
@@ -287,6 +293,7 @@ func (conn *GoogleDriveConnection) createRemoteFolder(folderRequest CreateFolder
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileRequest, fileData []byte) error {
+	conn.numApiCalls++
 	DebugLog("Creating remote file:", fileRequest)
 
 	// build the url
@@ -344,6 +351,7 @@ func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileReques
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime string, fileData []byte) error {
+	conn.numApiCalls++
 	DebugLog("uploading data for remote file:", id, modifiedTime)
 
 	// build the url
@@ -402,6 +410,7 @@ func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string) error {
+	conn.numApiCalls++
 	DebugLog("downloading", localFileName, id)
 
 	parameters := "?alt=media"
@@ -474,6 +483,7 @@ func (conn *GoogleDriveConnection) getModifiedItems(timestamp string) ([]FileMet
 //*********************************************************
 
 func (conn *GoogleDriveConnection) getPageOfModifiedItems(timestamp, nextPageToken string) (ListFilesResponse, error) {
+	conn.numApiCalls++
 	DebugLog("getting page of modified items for timestamp >", timestamp)
 
 	parameters := "?q=" + url.QueryEscape("modifiedTime > '"+timestamp+"'")
@@ -540,9 +550,15 @@ func (conn *GoogleDriveConnection) getFilesOwnedByServiceAcct(verbose bool) ([]F
 //*********************************************************
 
 func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool, nextPageToken string) (ListFilesResponse, error) {
-	DebugLog("getting page of files owned by service acct")
+	conn.numApiCalls++
+	if len(nextPageToken) == 0 {
+		DebugLog("getting first page of files owned by service acct")
+	} else {
+		DebugLog("getting another page of files owned by service acct")
+	}
 
 	parameters := "?fields=" + url.QueryEscape("nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)")
+	parameters += "&pageSize=1000"
 	if len(nextPageToken) > 0 {
 		parameters += "&pageToken=" + nextPageToken
 	}
@@ -590,6 +606,7 @@ func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
+	conn.numApiCalls++
 	DebugLog("deleting", item.Name, item.ID)
 
 	url := "https://www.googleapis.com/drive/v3/files/" + item.ID
