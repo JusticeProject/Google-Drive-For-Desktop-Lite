@@ -201,7 +201,7 @@ func main() {
 			service.verifyDownloads()
 
 			if len(service.filesToUpload) == 0 && len(service.filesToDownload) == 0 {
-				fmt.Println("verified! new verified timestamp:", service.mostRecentTimestampSeen, "numApiCalls:", service.conn.numApiCalls)
+				fmt.Println("verified! new verified timestamp:", service.mostRecentTimestampSeen.Local(), "numApiCalls:", service.conn.numApiCalls)
 				service.setVerifiedTime()
 				service.clearUploadLookupMap()
 				service.clearDownloadLookupMap()
