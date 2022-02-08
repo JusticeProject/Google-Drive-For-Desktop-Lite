@@ -213,7 +213,7 @@ func main() {
 				service.clearDownloadLookupMap()
 				verified = true
 			} else {
-				DebugLog("not verified, will try again next time")
+				fmt.Println("not verified, will try again next time")
 			}
 		}
 
