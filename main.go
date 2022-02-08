@@ -131,12 +131,14 @@ func main() {
 			service.clearUploadLookupMap()
 			err := service.fillUploadLookupMap(service.getBaseFolderSlice())
 			if err != nil {
+				fmt.Println(err)
 				continue
 			}
 			err = service.handleUploads()
 			if err != nil {
 				// if we only uploaded half a file then we don't want to download that half-written file,
 				// so we will try again from the beginning of the loop
+				fmt.Println(err)
 				continue
 			}
 		}
@@ -148,6 +150,7 @@ func main() {
 		// check if anything was modified on the remote shared drive
 		remoteModifiedFiles, err := service.getRemoteModifiedFiles()
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
 		if len(remoteModifiedFiles) > 0 {
@@ -156,6 +159,7 @@ func main() {
 			service.clearDownloadLookupMap()
 			err := service.fillDownloadLookupMap(remoteModifiedFiles, verified)
 			if err != nil {
+				fmt.Println(err)
 				continue
 			}
 
@@ -178,6 +182,7 @@ func main() {
 			service.clearUploadLookupMap()
 			err := service.fillUploadLookupMap(service.getBaseFolderSlice())
 			if err != nil {
+				fmt.Println(err)
 				continue
 			}
 		}
@@ -188,6 +193,7 @@ func main() {
 			service.clearDownloadLookupMap()
 			err := service.fillDownloadLookupMap(remoteModifiedFiles, verified)
 			if err != nil {
+				fmt.Println(err)
 				continue
 			}
 		}

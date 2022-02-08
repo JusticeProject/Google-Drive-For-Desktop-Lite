@@ -345,7 +345,7 @@ func (service *GoogleDriveService) getFullPath(id string, tempIdToMetaData map[s
 			}
 
 			if parentPath == "" {
-				return "", errors.New("something went wrong")
+				return "", errors.New("something went wrong when trying to getFullPath")
 			} else {
 				fullPath := parentPath + string(filepath.Separator) + metadata.Name
 				return fullPath, nil
