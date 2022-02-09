@@ -35,7 +35,7 @@ type GoogleDriveService struct {
 //*************************************************************************************************
 //*************************************************************************************************
 
-const MAX_UPLOAD_BYTES int64 = 5 * 1024 * 1024
+const LARGE_FILE_THRESHOLD_BYTES int = 5 * 1024 * 1024
 
 //*************************************************************************************************
 //*************************************************************************************************
@@ -298,10 +298,9 @@ func (service *GoogleDriveService) fillDownloadLookupMap(remoteModifiedFiles []F
 	// now piece together all the modified items by using the parent ids to create the file hierarchy
 	for id, metadata := range tempIdToMetaData {
 		fullPath, err := service.getFullPath(id, tempIdToMetaData)
-		if err != nil {
-			return err
-		}
-		if fullPath != "" {
+
+		// for deleted files the path might be "" with an error, we won't add those to the lookup map
+		if fullPath != "" && err == nil {
 			service.downloadLookupMap[fullPath] = metadata
 		}
 	}
@@ -357,7 +356,8 @@ func (service *GoogleDriveService) getFullPath(id string, tempIdToMetaData map[s
 					return baseFolderName, nil
 				}
 			}
-			return "", errors.New("no base folder found")
+			msg := fmt.Sprintln("no base folder found for file:", metadata.Name, "id:", id)
+			return "", errors.New(msg)
 		}
 	}
 	return "", errors.New("id was not found")
@@ -391,11 +391,6 @@ func (service *GoogleDriveService) localFilesModified() bool {
 
 		// ignore the desktop.ini files
 		if fileInfo.Name() == "desktop.ini" {
-			return nil
-		}
-
-		// ignore files that are too big to upload (for now)
-		if fileInfo.Size() > MAX_UPLOAD_BYTES {
 			return nil
 		}
 
@@ -583,7 +578,15 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 	} else {
 		request := CreateFileRequest{ID: ids[0], Name: fileName, Parents: parents, ModifiedTime: formattedTime}
 		fileData, _ := os.ReadFile(localPath)
-		err := service.conn.createRemoteFile(request, fileData)
+
+		var err error
+
+		if len(fileData) > LARGE_FILE_THRESHOLD_BYTES {
+			err = service.conn.createLargeRemoteFile(request, fileData)
+		} else {
+			err = service.conn.createRemoteFile(request, fileData)
+		}
+
 		if err != nil {
 			fmt.Println(err)
 			return err
@@ -605,7 +608,13 @@ func (service *GoogleDriveService) handleSingleUpload(localPath string, modified
 		return err
 	} else {
 		formattedTime := modifiedTime.Format(time.RFC3339Nano)
-		err = service.conn.updateFileAndMetadata(fileMetaData.ID, formattedTime, data)
+
+		if len(data) > LARGE_FILE_THRESHOLD_BYTES {
+			err = service.conn.updateLargeFileAndMetadata(fileMetaData.ID, formattedTime, data)
+		} else {
+			err = service.conn.updateFileAndMetadata(fileMetaData.ID, formattedTime, data)
+		}
+
 		if err != nil {
 			return err
 		}
@@ -676,7 +685,7 @@ func (service *GoogleDriveService) handleUploads() error {
 			localModTime := localFileInfo.ModTime()
 			remoteModTime, _ := time.Parse(time.RFC3339Nano, remoteFileData.ModifiedTime)
 			diff := localModTime.Sub(remoteModTime)
-			DebugLog("local mod time is newer by", diff.Seconds(), "seconds")
+			DebugLog(localFileInfo.Name(), "local mod time is newer by", diff.Seconds(), "seconds")
 
 			// if the local file is newer, then calculate the md5's
 			// allow for some floating point roundoff error

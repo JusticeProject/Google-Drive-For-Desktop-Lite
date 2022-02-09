@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
@@ -373,6 +375,236 @@ func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime
 
 	// for PATCH requests create a new request, then call the Do function
 	reader := bytes.NewReader([]byte(body))
+	req, err := http.NewRequestWithContext(conn.ctx, "PATCH", url, reader)
+	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
+	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	response, err := conn.client.Do(req)
+	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
+	DebugLog("received StatusCode", response.StatusCode)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	defer response.Body.Close()
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	//DebugLog(string(bodyData))
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		fmt.Println(string(bodyData))
+		return errors.New("failed")
+	}
+
+	return nil
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileRequest, fileData []byte) error {
+	conn.numApiCalls++
+	DebugLog("Creating large remote file:", fileRequest)
+
+	// Step 1: get a session URI where we can upload the data to
+
+	// build the url
+	parameters := "?uploadType=resumable"
+	parameters += "&key=" + conn.api_key
+	url := "https://www.googleapis.com/upload/drive/v3/files" + parameters
+
+	// create a new request, then call the Do function
+	json_data, _ := json.Marshal(fileRequest)
+	reader := bytes.NewReader(json_data)
+	req, err := http.NewRequestWithContext(conn.ctx, "POST", url, reader)
+	req.Header.Add("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(json_data)))
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	response, err := conn.client.Do(req)
+	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
+	DebugLog("received StatusCode", response.StatusCode)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	locationHeader, inHeader := response.Header["Location"]
+	if !inHeader || len(locationHeader) == 0 {
+		err := errors.New("header Location not available for createLargeRemoteFile")
+		fmt.Println(err)
+		return err
+	}
+	DebugLog("received locationHeader:", locationHeader)
+
+	bodyData, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	DebugLog(string(bodyData))
+
+	// if we didn't get what we were expecting, print out the response
+	if response.StatusCode >= 400 {
+		fmt.Println(string(bodyData))
+		return errors.New("failed")
+	}
+
+	//*************************************************************************
+
+	// Step 2: upload data to the session URI
+
+	bytesUploaded := 0
+	for try := 0; try < 5; try++ {
+		parameters = ""
+		if strings.Contains(locationHeader[0], "&key=") {
+			DebugLog("session URI already has the API key")
+		} else {
+			DebugLog("session URI did not have the API key, adding it")
+			parameters += "&key=" + conn.api_key
+		}
+		url = locationHeader[0] + parameters
+		req, err = http.NewRequestWithContext(conn.ctx, "PUT", url, bytes.NewReader(fileData))
+		if err != nil {
+			fmt.Println(err)
+			continue // do a retry
+		}
+		req.Header.Add("Content-Length", fmt.Sprintf("%v", len(fileData)-bytesUploaded))
+		if bytesUploaded > 0 {
+			req.Header.Add("Content-Range", fmt.Sprintf("bytes %v-%v/%v", bytesUploaded, len(fileData)-1, len(fileData)))
+		}
+
+		response, err = conn.client.Do(req)
+		DebugLog("received StatusCode", response.StatusCode)
+		if err != nil {
+			fmt.Println(err)
+			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			if err != nil {
+				return err
+			}
+			if bytesUploaded < len(fileData) {
+				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
+				continue // do a retry
+			}
+		}
+
+		if response.StatusCode >= 400 {
+			err = errors.New("error uploading large file")
+			fmt.Println(err)
+			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			if err != nil {
+				return err
+			}
+			if bytesUploaded < len(fileData) {
+				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
+				continue // do a retry
+			}
+		}
+
+		bodyData, err = io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			fmt.Println(err)
+			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			if err != nil {
+				return err
+			}
+			if bytesUploaded < len(fileData) {
+				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
+				continue // do a retry
+			}
+		}
+		DebugLog(string(bodyData))
+
+		// if we got this far then it was successful
+		return nil
+	}
+
+	return errors.New("ran out of retries in createLargeRemoteFile")
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (int, error) {
+	DebugLog("requesting the number of bytes uploaded")
+
+	req, err := http.NewRequestWithContext(conn.ctx, "PUT", url, nil)
+	req.Header.Add("Content-Range", fmt.Sprintf("*/%v", fileSize))
+	if err != nil {
+		fmt.Println(err)
+		return 0, err
+	}
+
+	response, err := conn.client.Do(req)
+	DebugLog("received StatusCode", response.StatusCode)
+	if err != nil {
+		return 0, err
+	}
+
+	switch response.StatusCode {
+	case 200, 201:
+		return fileSize, nil
+	case 308:
+		rangeHeader, inHeaders := response.Header["Range"]
+		if !inHeaders || len(rangeHeader) == 0 {
+			return 0, nil
+		}
+		rangeSplit := strings.Split(rangeHeader[0], "-")
+		if len(rangeSplit) > 1 {
+			bytesUploaded, err := strconv.ParseInt(rangeSplit[1], 10, 0)
+			if err == nil {
+				return int(bytesUploaded), nil
+			}
+		}
+	default:
+		return 0, errors.New("unknown number of bytes uploaded")
+	}
+
+	return 0, nil
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (conn *GoogleDriveConnection) updateLargeFileAndMetadata(id string, modifiedTime string, fileData []byte) error {
+	// TODO: this is just a copy/paste of the small file version, need to update for large files
+	conn.numApiCalls++
+	DebugLog("uploading data for large remote file:", id, modifiedTime)
+
+	// build the url
+	parameters := "?uploadType=multipart"
+	parameters += "&key=" + conn.api_key
+	url := "https://www.googleapis.com/upload/drive/v3/files/" + id + parameters
+
+	// build the body
+	request := UpdateFileRequest{ModifiedTime: modifiedTime}
+	json_data, _ := json.Marshal(request)
+
+	body := "--foo_bar_baz\n"
+	body += "Content-Type: application/json; charset=UTF-8\n\n"
+	body += string(json_data)
+	body += "\n--foo_bar_baz\n"
+	body += "Content-Type: application/octet-stream\n\n"
+	body += string(fileData) + "\n"
+	body += "--foo_bar_baz--"
+
+	// for PATCH requests create a new request, then call the Do function
+	reader := bytes.NewReader([]byte(body))
+	// TODO: use PUT?
 	req, err := http.NewRequestWithContext(conn.ctx, "PATCH", url, reader)
 	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
 	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
