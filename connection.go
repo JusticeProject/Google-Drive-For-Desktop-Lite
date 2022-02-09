@@ -528,8 +528,14 @@ func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int64) 
 	if err != nil {
 		return 0, err
 	}
-
 	DebugLog("received StatusCode", response.StatusCode)
+
+	defer response.Body.Close()
+	bodyData, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, err
+	}
+	DebugLog(string(bodyData))
 
 	switch response.StatusCode {
 	case 200, 201:
