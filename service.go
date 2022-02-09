@@ -582,9 +582,9 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 		var err error
 
 		if len(fileData) > LARGE_FILE_THRESHOLD_BYTES {
-			err = service.conn.createLargeRemoteFile(request, fileData)
+			err = service.conn.uploadLargeFile(request.ID, &request, fileData)
 		} else {
-			err = service.conn.createRemoteFile(request, fileData)
+			err = service.conn.uploadFile(request.ID, &request, fileData)
 		}
 
 		if err != nil {
@@ -608,11 +608,12 @@ func (service *GoogleDriveService) handleSingleUpload(localPath string, modified
 		return err
 	} else {
 		formattedTime := modifiedTime.Format(time.RFC3339Nano)
+		request := UpdateFileRequest{ModifiedTime: formattedTime}
 
 		if len(data) > LARGE_FILE_THRESHOLD_BYTES {
-			err = service.conn.updateLargeFileAndMetadata(fileMetaData.ID, formattedTime, data)
+			err = service.conn.uploadLargeFile(fileMetaData.ID, &request, data)
 		} else {
-			err = service.conn.updateFileAndMetadata(fileMetaData.ID, formattedTime, data)
+			err = service.conn.uploadFile(fileMetaData.ID, &request, data)
 		}
 
 		if err != nil {

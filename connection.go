@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
@@ -51,24 +52,54 @@ type ListFilesResponse struct {
 	Files         []FileMetaData `json:"files"`
 }
 
-//*********************************************************
+//*************************************************************************************************
+//*************************************************************************************************
 
 type GenerateIdsResponse struct {
 	IDs []string `json:"ids"`
 }
 
+//*************************************************************************************************
+//*************************************************************************************************
+
+type UploadRequest interface {
+	GetBytes() []byte
+	CreateFile() bool
+}
+
 //*********************************************************
 
+// satisfies the UploadRequest interface
 type UpdateFileRequest struct {
 	ModifiedTime string `json:"modifiedTime"`
 }
 
+func (req *UpdateFileRequest) GetBytes() []byte {
+	data, _ := json.Marshal(req)
+	return data
+}
+
+func (req *UpdateFileRequest) CreateFile() bool { return false }
+
+//*********************************************************
+
+// satisfies the UploadRequest interface
 type CreateFileRequest struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
 	Parents      []string `json:"parents"`
 	ModifiedTime string   `json:"modifiedTime"`
 }
+
+func (req *CreateFileRequest) GetBytes() []byte {
+	data, _ := json.Marshal(req)
+	return data
+}
+
+func (req *CreateFileRequest) CreateFile() bool { return true }
+
+//*************************************************************************************************
+//*************************************************************************************************
 
 type CreateFolderRequest struct {
 	ID           string   `json:"id"`
@@ -294,20 +325,28 @@ func (conn *GoogleDriveConnection) createRemoteFolder(folderRequest CreateFolder
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileRequest, fileData []byte) error {
+func (conn *GoogleDriveConnection) uploadFile(id string, uploadRequest UploadRequest, fileData []byte) error {
 	conn.numApiCalls++
-	DebugLog("Creating remote file:", fileRequest)
+	create := uploadRequest.CreateFile()
+	if create {
+		DebugLog("Creating remote file:", uploadRequest)
+	} else {
+		DebugLog("Updating remote file:", uploadRequest)
+	}
 
 	// build the url
 	parameters := "?uploadType=multipart"
 	parameters += "&key=" + conn.api_key
-	url := "https://www.googleapis.com/upload/drive/v3/files" + parameters
+	url := "https://www.googleapis.com/upload/drive/v3/files"
+	if !create {
+		url += "/" + id
+	}
+	url += parameters
 
 	// build the body
-	json_data, _ := json.Marshal(fileRequest)
-
 	body := "--foo_bar_baz\n"
 	body += "Content-Type: application/json; charset=UTF-8\n\n"
+	json_data := uploadRequest.GetBytes()
 	body += string(json_data)
 	body += "\n--foo_bar_baz\n"
 	body += "Content-Type: application/octet-stream\n\n"
@@ -316,7 +355,11 @@ func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileReques
 
 	// create a new request, then call the Do function
 	reader := bytes.NewReader([]byte(body))
-	req, err := http.NewRequestWithContext(conn.ctx, "POST", url, reader)
+	verb := "POST"
+	if !create {
+		verb = "PATCH"
+	}
+	req, err := http.NewRequestWithContext(conn.ctx, verb, url, reader)
 	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
 	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
 	if err != nil {
@@ -352,78 +395,28 @@ func (conn *GoogleDriveConnection) createRemoteFile(fileRequest CreateFileReques
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) updateFileAndMetadata(id string, modifiedTime string, fileData []byte) error {
+func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest UploadRequest, fileData []byte) error {
 	conn.numApiCalls++
-	DebugLog("uploading data for remote file:", id, modifiedTime)
-
-	// build the url
-	parameters := "?uploadType=multipart"
-	parameters += "&key=" + conn.api_key
-	url := "https://www.googleapis.com/upload/drive/v3/files/" + id + parameters
-
-	// build the body
-	request := UpdateFileRequest{ModifiedTime: modifiedTime}
-	json_data, _ := json.Marshal(request)
-
-	body := "--foo_bar_baz\n"
-	body += "Content-Type: application/json; charset=UTF-8\n\n"
-	body += string(json_data)
-	body += "\n--foo_bar_baz\n"
-	body += "Content-Type: application/octet-stream\n\n"
-	body += string(fileData) + "\n"
-	body += "--foo_bar_baz--"
-
-	// for PATCH requests create a new request, then call the Do function
-	reader := bytes.NewReader([]byte(body))
-	req, err := http.NewRequestWithContext(conn.ctx, "PATCH", url, reader)
-	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
-	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
-	if err != nil {
-		fmt.Println(err)
-		return err
+	create := uploadRequest.CreateFile()
+	if create {
+		DebugLog("Creating large remote file:", uploadRequest)
+	} else {
+		DebugLog("Updating large remote file:", uploadRequest)
 	}
-
-	response, err := conn.client.Do(req)
-	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
-	DebugLog("received StatusCode", response.StatusCode)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-
-	defer response.Body.Close()
-	bodyData, err := io.ReadAll(response.Body)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	//DebugLog(string(bodyData))
-
-	// if we didn't get what we were expecting, print out the response
-	if response.StatusCode >= 400 {
-		fmt.Println(string(bodyData))
-		return errors.New("failed")
-	}
-
-	return nil
-}
-
-//*************************************************************************************************
-//*************************************************************************************************
-
-func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileRequest, fileData []byte) error {
-	conn.numApiCalls++
-	DebugLog("Creating large remote file:", fileRequest)
 
 	// Step 1: get a session URI where we can upload the data to
 
 	// build the url
 	parameters := "?uploadType=resumable"
 	parameters += "&key=" + conn.api_key
-	url := "https://www.googleapis.com/upload/drive/v3/files" + parameters
+	url := "https://www.googleapis.com/upload/drive/v3/files"
+	if !create {
+		url += "/" + id
+	}
+	url += parameters
 
 	// create a new request, then call the Do function
-	json_data, _ := json.Marshal(fileRequest)
+	json_data := uploadRequest.GetBytes()
 	reader := bytes.NewReader(json_data)
 	req, err := http.NewRequestWithContext(conn.ctx, "POST", url, reader)
 	req.Header.Add("Content-Type", "application/json; charset=UTF-8")
@@ -468,7 +461,8 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 	// Step 2: upload data to the session URI
 
 	bytesUploaded := 0
-	for try := 0; try < 5; try++ {
+	for try := 1; try <= 5; try++ {
+		conn.numApiCalls++
 		parameters = ""
 		if strings.Contains(locationHeader[0], "&key=") {
 			DebugLog("session URI already has the API key")
@@ -477,7 +471,12 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 			parameters += "&key=" + conn.api_key
 		}
 		url = locationHeader[0] + parameters
-		req, err = http.NewRequestWithContext(conn.ctx, "PUT", url, bytes.NewReader(fileData))
+		verb := "PUT"
+		if !create {
+			verb = "PATCH"
+		}
+		dataReader := bytes.NewReader(fileData[bytesUploaded:])
+		req, err = http.NewRequestWithContext(conn.ctx, verb, url, dataReader)
 		if err != nil {
 			fmt.Println(err)
 			continue // do a retry
@@ -491,6 +490,7 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 		DebugLog("received StatusCode", response.StatusCode)
 		if err != nil {
 			fmt.Println(err)
+			time.Sleep(time.Duration(try) * 10 * time.Second)
 			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
 			if err != nil {
 				return err
@@ -504,6 +504,7 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 		if response.StatusCode >= 400 {
 			err = errors.New("error uploading large file")
 			fmt.Println(err)
+			time.Sleep(time.Duration(try) * 10 * time.Second)
 			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
 			if err != nil {
 				return err
@@ -518,6 +519,7 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 		response.Body.Close()
 		if err != nil {
 			fmt.Println(err)
+			time.Sleep(time.Duration(try) * 10 * time.Second)
 			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
 			if err != nil {
 				return err
@@ -540,6 +542,7 @@ func (conn *GoogleDriveConnection) createLargeRemoteFile(fileRequest CreateFileR
 //*************************************************************************************************
 
 func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (int, error) {
+	conn.numApiCalls++
 	DebugLog("requesting the number of bytes uploaded")
 
 	req, err := http.NewRequestWithContext(conn.ctx, "PUT", url, nil)
@@ -567,7 +570,7 @@ func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (i
 		if len(rangeSplit) > 1 {
 			bytesUploaded, err := strconv.ParseInt(rangeSplit[1], 10, 0)
 			if err == nil {
-				return int(bytesUploaded), nil
+				return int(bytesUploaded + 1), nil
 			}
 		}
 	default:
@@ -575,67 +578,6 @@ func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (i
 	}
 
 	return 0, nil
-}
-
-//*************************************************************************************************
-//*************************************************************************************************
-
-func (conn *GoogleDriveConnection) updateLargeFileAndMetadata(id string, modifiedTime string, fileData []byte) error {
-	// TODO: this is just a copy/paste of the small file version, need to update for large files
-	conn.numApiCalls++
-	DebugLog("uploading data for large remote file:", id, modifiedTime)
-
-	// build the url
-	parameters := "?uploadType=multipart"
-	parameters += "&key=" + conn.api_key
-	url := "https://www.googleapis.com/upload/drive/v3/files/" + id + parameters
-
-	// build the body
-	request := UpdateFileRequest{ModifiedTime: modifiedTime}
-	json_data, _ := json.Marshal(request)
-
-	body := "--foo_bar_baz\n"
-	body += "Content-Type: application/json; charset=UTF-8\n\n"
-	body += string(json_data)
-	body += "\n--foo_bar_baz\n"
-	body += "Content-Type: application/octet-stream\n\n"
-	body += string(fileData) + "\n"
-	body += "--foo_bar_baz--"
-
-	// for PATCH requests create a new request, then call the Do function
-	reader := bytes.NewReader([]byte(body))
-	// TODO: use PUT?
-	req, err := http.NewRequestWithContext(conn.ctx, "PATCH", url, reader)
-	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
-	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-
-	response, err := conn.client.Do(req)
-	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
-	DebugLog("received StatusCode", response.StatusCode)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-
-	defer response.Body.Close()
-	bodyData, err := io.ReadAll(response.Body)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	//DebugLog(string(bodyData))
-
-	// if we didn't get what we were expecting, print out the response
-	if response.StatusCode >= 400 {
-		fmt.Println(string(bodyData))
-		return errors.New("failed")
-	}
-
-	return nil
 }
 
 //*************************************************************************************************
