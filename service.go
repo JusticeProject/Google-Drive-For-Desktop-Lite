@@ -549,9 +549,9 @@ func (service *GoogleDriveService) handleDownloads() bool {
 //*************************************************************************************************
 
 func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fileName string, modifiedTime time.Time) error {
-	ids := service.conn.generateIds(1)
-	if len(ids) != 1 {
-		fmt.Println("failed to get ids for new file", localPath)
+	ids, err := service.conn.generateIds(1)
+	if len(ids) != 1 || err != nil {
+		fmt.Println("failed to get ids for new file:", localPath, "err:", err)
 		return errors.New("failed to generate id") // we'll try again next time
 	}
 
@@ -570,7 +570,6 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 		request := CreateFolderRequest{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Parents: parents, ModifiedTime: formattedTime}
 		err := service.conn.createRemoteFolder(request)
 		if err != nil {
-			fmt.Println(err)
 			return err
 		} else {
 			service.uploadLookupMap[localPath] = FileMetaData{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Md5Checksum: ""}
@@ -588,7 +587,6 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 		}
 
 		if err != nil {
-			fmt.Println(err)
 			return err
 		}
 	}
@@ -604,7 +602,6 @@ func (service *GoogleDriveService) handleSingleUpload(localPath string, modified
 
 	data, err := os.ReadFile(localPath)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	} else {
 		formattedTime := modifiedTime.Format(time.RFC3339Nano)
@@ -658,7 +655,6 @@ func (service *GoogleDriveService) handleUploads() error {
 			localFileData := allLocalFileInfo[localPath]
 			err := service.handleCreate(localPath, true, folderName, localFileData.ModTime())
 			if err != nil {
-				fmt.Println(err)
 				return err
 			}
 		}
@@ -679,7 +675,6 @@ func (service *GoogleDriveService) handleUploads() error {
 			// create file
 			err := service.handleCreate(localPath, localFileInfo.IsDir(), localFileInfo.Name(), localFileInfo.ModTime())
 			if err != nil {
-				fmt.Println(err)
 				return err
 			}
 		} else {
@@ -698,7 +693,6 @@ func (service *GoogleDriveService) handleUploads() error {
 					DebugLog("local mod time is newer", localModTime, remoteModTime)
 					err := service.handleSingleUpload(localPath, localFileInfo.ModTime())
 					if err != nil {
-						fmt.Println(err)
 						return err
 					}
 				}

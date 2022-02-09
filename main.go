@@ -39,6 +39,7 @@ func removeDeletedFiles(service *GoogleDriveService, promptUser bool) {
 	localToRemoteLookup := make(map[string]FileMetaData) // key=local file name
 	err := service.fillLookupMap(localToRemoteLookup, service.getBaseFolderSlice())
 	if err != nil {
+		fmt.Println(err)
 		fmt.Println("failed to fillLookupMap, not removing the deleted files")
 		return
 	}
@@ -60,7 +61,10 @@ func removeDeletedFiles(service *GoogleDriveService, promptUser bool) {
 		}
 
 		if needToDelete {
-			service.conn.deleteFileOrFolder(serviceFile)
+			err := service.conn.deleteFileOrFolder(serviceFile)
+			if err != nil {
+				fmt.Println(err)
+			}
 		}
 	}
 }

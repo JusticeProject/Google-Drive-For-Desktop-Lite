@@ -175,11 +175,9 @@ func (conn *GoogleDriveConnection) getPageInSharedFolder(localFolderPath, folder
 	parameters += "&key=" + conn.api_key
 	parameters += "&q=%27" + folderId + "%27%20in%20parents" // %27 is single quote, %20 is a space
 	response, err := conn.client.Get("https://www.googleapis.com/drive/v3/files" + parameters)
-	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -189,7 +187,7 @@ func (conn *GoogleDriveConnection) getPageInSharedFolder(localFolderPath, folder
 	if response.StatusCode >= 400 {
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
-			fmt.Println(err)
+			return ListFilesResponse{}, err
 		}
 		fmt.Println(string(bodyData))
 		return ListFilesResponse{}, errors.New("unexpected response in getItemsInSharedFolder")
@@ -198,10 +196,6 @@ func (conn *GoogleDriveConnection) getPageInSharedFolder(localFolderPath, folder
 	// decode the json data into our struct
 	var data ListFilesResponse
 	err = json.NewDecoder(response.Body).Decode(&data)
-	if err != nil {
-		fmt.Println(err)
-	}
-
 	return data, err
 }
 
@@ -218,14 +212,12 @@ func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (File
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return FileMetaData{}, err
 	}
 
 	defer response.Body.Close()
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
 		return FileMetaData{}, err
 	}
 
@@ -237,10 +229,6 @@ func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (File
 
 	var data FileMetaData
 	err = json.Unmarshal(bodyData, &data)
-	if err != nil {
-		fmt.Println(err)
-	}
-
 	DebugLog(data)
 
 	return data, err
@@ -249,7 +237,7 @@ func (conn *GoogleDriveConnection) getMetadataById(name string, id string) (File
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) generateIds(count int) []string {
+func (conn *GoogleDriveConnection) generateIds(count int) ([]string, error) {
 	conn.numApiCalls++
 	DebugLog("generating ids with count:", count)
 
@@ -259,8 +247,7 @@ func (conn *GoogleDriveConnection) generateIds(count int) []string {
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
-		return []string{}
+		return []string{}, err
 	}
 
 	defer response.Body.Close()
@@ -269,20 +256,16 @@ func (conn *GoogleDriveConnection) generateIds(count int) []string {
 	if response.StatusCode >= 400 {
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
-			fmt.Println(err)
+			return []string{}, err
 		}
 		fmt.Println(string(bodyData))
-		return []string{}
+		return []string{}, errors.New("unexpected response in generateIds")
 	}
 
 	// decode the json data into our struct
 	var data GenerateIdsResponse
 	err = json.NewDecoder(response.Body).Decode(&data)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	return data.IDs
+	return data.IDs, err
 }
 
 //*************************************************************************************************
@@ -301,14 +284,12 @@ func (conn *GoogleDriveConnection) createRemoteFolder(folderRequest CreateFolder
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
 	defer response.Body.Close()
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	DebugLog(string(bodyData))
@@ -363,7 +344,6 @@ func (conn *GoogleDriveConnection) uploadFile(id string, uploadRequest UploadReq
 	req.Header.Add("Content-Type", "multipart/related; boundary=foo_bar_baz")
 	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(body)))
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
@@ -371,14 +351,12 @@ func (conn *GoogleDriveConnection) uploadFile(id string, uploadRequest UploadReq
 	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
 	DebugLog("received StatusCode", response.StatusCode)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
 	defer response.Body.Close()
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	DebugLog(string(bodyData))
@@ -418,11 +396,14 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 	// create a new request, then call the Do function
 	json_data := uploadRequest.GetBytes()
 	reader := bytes.NewReader(json_data)
-	req, err := http.NewRequestWithContext(conn.ctx, "POST", url, reader)
+	verb := "POST"
+	if !create {
+		verb = "PATCH"
+	}
+	req, err := http.NewRequestWithContext(conn.ctx, verb, url, reader)
 	req.Header.Add("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Add("Content-Length", fmt.Sprintf("%v", len(json_data)))
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
@@ -430,14 +411,12 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
 	DebugLog("received StatusCode", response.StatusCode)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
 	locationHeader, inHeader := response.Header["Location"]
 	if !inHeader || len(locationHeader) == 0 {
 		err := errors.New("header Location not available for createLargeRemoteFile")
-		fmt.Println(err)
 		return err
 	}
 	DebugLog("received locationHeader:", locationHeader)
@@ -445,7 +424,6 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 	bodyData, err := io.ReadAll(response.Body)
 	response.Body.Close()
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	DebugLog(string(bodyData))
@@ -593,7 +571,6 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
@@ -603,7 +580,6 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 	if response.StatusCode >= 400 {
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
-			fmt.Println(err)
 			return err
 		}
 		fmt.Println(string(bodyData))
@@ -612,15 +588,12 @@ func (conn *GoogleDriveConnection) downloadFile(id string, localFileName string)
 
 	fh, err := os.Create(localFileName)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
 	n, err := io.Copy(fh, response.Body)
 	DebugLog(fmt.Sprintf("Wrote %v bytes to file", n))
 	if err != nil {
-		fmt.Println(err)
-
 		// if we only downloaded half the file, remove the local file so we don't upload the half file later on
 		fh.Close()
 		os.Remove(localFileName)
@@ -672,7 +645,6 @@ func (conn *GoogleDriveConnection) getPageOfModifiedItems(timestamp, nextPageTok
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -682,7 +654,6 @@ func (conn *GoogleDriveConnection) getPageOfModifiedItems(timestamp, nextPageTok
 	if response.StatusCode >= 400 {
 		bodyData, err := io.ReadAll(response.Body)
 		if err != nil {
-			fmt.Println(err)
 			return ListFilesResponse{}, err
 		}
 		fmt.Println(string(bodyData))
@@ -693,7 +664,6 @@ func (conn *GoogleDriveConnection) getPageOfModifiedItems(timestamp, nextPageTok
 	var data ListFilesResponse
 	err = json.NewDecoder(response.Body).Decode(&data)
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -741,7 +711,6 @@ func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool
 	DebugLog("received StatusCode", response.StatusCode)
 
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -750,7 +719,6 @@ func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool
 	// read the data
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -768,7 +736,6 @@ func (conn *GoogleDriveConnection) getPageOfFilesOwnedByServiceAcct(verbose bool
 	var data ListFilesResponse
 	err = json.Unmarshal(bodyData, &data)
 	if err != nil {
-		fmt.Println(err)
 		return ListFilesResponse{}, err
 	}
 
@@ -786,7 +753,6 @@ func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
 	url := "https://www.googleapis.com/drive/v3/files/" + item.ID
 	req, err := http.NewRequestWithContext(conn.ctx, "DELETE", url, nil)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
@@ -794,14 +760,12 @@ func (conn *GoogleDriveConnection) deleteFileOrFolder(item FileMetaData) error {
 	//fmt.Println("Sent request:", response.Request.Host, response.Request.URL, response.Request.Header, response.Request.Body)
 	DebugLog("received StatusCode", response.StatusCode)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 
 	defer response.Body.Close()
 	bodyData, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	DebugLog(string(bodyData))
