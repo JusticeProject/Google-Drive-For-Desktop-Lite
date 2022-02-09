@@ -373,7 +373,7 @@ func (conn *GoogleDriveConnection) uploadFile(id string, uploadRequest UploadReq
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest UploadRequest, fileData []byte) error {
+func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest UploadRequest, fh *os.File, fileSize int64) error {
 	conn.numApiCalls++
 	create := uploadRequest.CreateFile()
 	if create {
@@ -438,7 +438,7 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 
 	// Step 2: upload data to the session URI
 
-	bytesUploaded := 0
+	bytesUploaded := int64(0)
 	for try := 1; try <= 5; try++ {
 		conn.numApiCalls++
 		parameters = ""
@@ -453,27 +453,27 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 		if !create {
 			verb = "PATCH"
 		}
-		dataReader := bytes.NewReader(fileData[bytesUploaded:])
-		req, err = http.NewRequestWithContext(conn.ctx, verb, url, dataReader)
+		fh.Seek(bytesUploaded, 0)
+		req, err = http.NewRequestWithContext(conn.ctx, verb, url, fh)
 		if err != nil {
 			fmt.Println(err)
 			continue // do a retry
 		}
-		req.Header.Add("Content-Length", fmt.Sprintf("%v", len(fileData)-bytesUploaded))
+		req.Header.Add("Content-Length", fmt.Sprintf("%v", fileSize-bytesUploaded))
 		if bytesUploaded > 0 {
-			req.Header.Add("Content-Range", fmt.Sprintf("bytes %v-%v/%v", bytesUploaded, len(fileData)-1, len(fileData)))
+			req.Header.Add("Content-Range", fmt.Sprintf("bytes %v-%v/%v", bytesUploaded, fileSize-1, fileSize))
 		}
 
 		response, err = conn.client.Do(req)
 		DebugLog("received StatusCode", response.StatusCode)
 		if err != nil {
 			fmt.Println(err)
-			time.Sleep(time.Duration(try) * 10 * time.Second)
-			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			time.Sleep(time.Minute)
+			bytesUploaded, err := conn.getBytesUploaded(url, fileSize)
 			if err != nil {
 				return err
 			}
-			if bytesUploaded < len(fileData) {
+			if bytesUploaded < fileSize {
 				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
 				continue // do a retry
 			}
@@ -482,12 +482,12 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 		if response.StatusCode >= 400 {
 			err = errors.New("error uploading large file")
 			fmt.Println(err)
-			time.Sleep(time.Duration(try) * 10 * time.Second)
-			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			time.Sleep(time.Minute)
+			bytesUploaded, err := conn.getBytesUploaded(url, fileSize)
 			if err != nil {
 				return err
 			}
-			if bytesUploaded < len(fileData) {
+			if bytesUploaded < fileSize {
 				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
 				continue // do a retry
 			}
@@ -497,12 +497,12 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 		response.Body.Close()
 		if err != nil {
 			fmt.Println(err)
-			time.Sleep(time.Duration(try) * 10 * time.Second)
-			bytesUploaded, err := conn.getBytesUploaded(url, len(fileData))
+			time.Sleep(time.Minute)
+			bytesUploaded, err := conn.getBytesUploaded(url, fileSize)
 			if err != nil {
 				return err
 			}
-			if bytesUploaded < len(fileData) {
+			if bytesUploaded < fileSize {
 				DebugLog("trying again after", bytesUploaded, "bytes were uploaded")
 				continue // do a retry
 			}
@@ -519,7 +519,7 @@ func (conn *GoogleDriveConnection) uploadLargeFile(id string, uploadRequest Uplo
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (int, error) {
+func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int64) (int64, error) {
 	conn.numApiCalls++
 	DebugLog("requesting the number of bytes uploaded")
 
@@ -548,7 +548,7 @@ func (conn *GoogleDriveConnection) getBytesUploaded(url string, fileSize int) (i
 		if len(rangeSplit) > 1 {
 			bytesUploaded, err := strconv.ParseInt(rangeSplit[1], 10, 0)
 			if err == nil {
-				return int(bytesUploaded + 1), nil
+				return bytesUploaded + 1, nil
 			}
 		}
 	default:

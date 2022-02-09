@@ -5,6 +5,8 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,7 +37,7 @@ type GoogleDriveService struct {
 //*************************************************************************************************
 //*************************************************************************************************
 
-const LARGE_FILE_THRESHOLD_BYTES int = 5 * 1024 * 1024
+const LARGE_FILE_THRESHOLD_BYTES int64 = 5 * 1024 * 1024
 
 //*************************************************************************************************
 //*************************************************************************************************
@@ -367,13 +369,20 @@ func (service *GoogleDriveService) getFullPath(id string, tempIdToMetaData map[s
 //*************************************************************************************************
 
 func getMd5OfFile(path string) string {
-	data, err := os.ReadFile(path)
+	fh, err := os.Open(path)
 	if err != nil {
-		fmt.Println("could not read file for md5", err)
+		fmt.Println("could not open file for md5", err)
 		return ""
 	}
-	result := md5.Sum(data)
-	result_string := fmt.Sprintf("%x", result)
+	defer fh.Close()
+
+	result := md5.New()
+	if _, err := io.Copy(result, fh); err != nil {
+		fmt.Println("could could copy data from file for md5", err)
+		return ""
+	}
+
+	result_string := fmt.Sprintf("%x", result.Sum(nil))
 	return result_string
 }
 
@@ -548,7 +557,7 @@ func (service *GoogleDriveService) handleDownloads() bool {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fileName string, modifiedTime time.Time) error {
+func (service *GoogleDriveService) handleCreate(localPath string, localFileInfo fs.FileInfo) error {
 	ids, err := service.conn.generateIds(1)
 	if len(ids) != 1 || err != nil {
 		fmt.Println("failed to get ids for new file:", localPath, "err:", err)
@@ -564,25 +573,28 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 	}
 	parents := []string{parentId.ID}
 
-	formattedTime := modifiedTime.Format(time.RFC3339Nano)
+	formattedTime := localFileInfo.ModTime().Format(time.RFC3339Nano)
 
-	if isDir {
-		request := CreateFolderRequest{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Parents: parents, ModifiedTime: formattedTime}
+	if localFileInfo.IsDir() {
+		request := CreateFolderRequest{ID: ids[0], Name: localFileInfo.Name(), MimeType: "application/vnd.google-apps.folder", Parents: parents, ModifiedTime: formattedTime}
 		err := service.conn.createRemoteFolder(request)
 		if err != nil {
 			return err
 		} else {
-			service.uploadLookupMap[localPath] = FileMetaData{ID: ids[0], Name: fileName, MimeType: "application/vnd.google-apps.folder", Md5Checksum: ""}
+			service.uploadLookupMap[localPath] = FileMetaData{ID: ids[0], Name: localFileInfo.Name(), MimeType: "application/vnd.google-apps.folder", Md5Checksum: ""}
 		}
 	} else {
-		request := CreateFileRequest{ID: ids[0], Name: fileName, Parents: parents, ModifiedTime: formattedTime}
-		fileData, _ := os.ReadFile(localPath)
+		request := CreateFileRequest{ID: ids[0], Name: localFileInfo.Name(), Parents: parents, ModifiedTime: formattedTime}
 
 		var err error
 
-		if len(fileData) > LARGE_FILE_THRESHOLD_BYTES {
-			err = service.conn.uploadLargeFile(request.ID, &request, fileData)
+		if localFileInfo.Size() > LARGE_FILE_THRESHOLD_BYTES {
+			fh, openErr := os.Open(localPath)
+			if openErr == nil {
+				err = service.conn.uploadLargeFile(request.ID, &request, fh, localFileInfo.Size())
+			}
 		} else {
+			fileData, _ := os.ReadFile(localPath)
 			err = service.conn.uploadFile(request.ID, &request, fileData)
 		}
 
@@ -597,25 +609,26 @@ func (service *GoogleDriveService) handleCreate(localPath string, isDir bool, fi
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) handleSingleUpload(localPath string, modifiedTime time.Time) error {
+func (service *GoogleDriveService) handleSingleUpload(localPath string, modifiedTime time.Time, fileLength int64) error {
 	fileMetaData := service.uploadLookupMap[localPath]
 
-	data, err := os.ReadFile(localPath)
+	formattedTime := modifiedTime.Format(time.RFC3339Nano)
+	request := UpdateFileRequest{ModifiedTime: formattedTime}
+
+	var err error
+
+	if fileLength > LARGE_FILE_THRESHOLD_BYTES {
+		fh, openErr := os.Open(localPath)
+		if openErr == nil {
+			err = service.conn.uploadLargeFile(fileMetaData.ID, &request, fh, fileLength)
+		}
+	} else {
+		data, _ := os.ReadFile(localPath)
+		err = service.conn.uploadFile(fileMetaData.ID, &request, data)
+	}
+
 	if err != nil {
 		return err
-	} else {
-		formattedTime := modifiedTime.Format(time.RFC3339Nano)
-		request := UpdateFileRequest{ModifiedTime: formattedTime}
-
-		if len(data) > LARGE_FILE_THRESHOLD_BYTES {
-			err = service.conn.uploadLargeFile(fileMetaData.ID, &request, data)
-		} else {
-			err = service.conn.uploadFile(fileMetaData.ID, &request, data)
-		}
-
-		if err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -651,9 +664,8 @@ func (service *GoogleDriveService) handleUploads() error {
 		_, existsOnServer := service.uploadLookupMap[localPath]
 		if !existsOnServer {
 			DebugLog(localPath, "does not exist on server")
-			folderName := filepath.Base(localPath)
-			localFileData := allLocalFileInfo[localPath]
-			err := service.handleCreate(localPath, true, folderName, localFileData.ModTime())
+			localFileInfo := allLocalFileInfo[localPath]
+			err := service.handleCreate(localPath, localFileInfo)
 			if err != nil {
 				return err
 			}
@@ -673,7 +685,7 @@ func (service *GoogleDriveService) handleUploads() error {
 			DebugLog(localPath, "does not exist on server")
 
 			// create file
-			err := service.handleCreate(localPath, localFileInfo.IsDir(), localFileInfo.Name(), localFileInfo.ModTime())
+			err := service.handleCreate(localPath, localFileInfo)
 			if err != nil {
 				return err
 			}
@@ -691,7 +703,7 @@ func (service *GoogleDriveService) handleUploads() error {
 				if localMd5 != remoteFileData.Md5Checksum {
 					DebugLog("md5's do not match", localMd5, remoteFileData.Md5Checksum)
 					DebugLog("local mod time is newer", localModTime, remoteModTime)
-					err := service.handleSingleUpload(localPath, localFileInfo.ModTime())
+					err := service.handleSingleUpload(localPath, localFileInfo.ModTime(), localFileInfo.Size())
 					if err != nil {
 						return err
 					}
