@@ -33,7 +33,7 @@ func removeDeletedFiles(service *GoogleDriveService, promptUser bool) {
 		}
 	}
 
-	DebugLog("Proceeding to delete files...")
+	DebugLog("Proceeding to remove deleted files...")
 
 	// if there are any errors when filling the lookup map, then don't proceed!!
 	localToRemoteLookup := make(map[string]FileMetaData) // key=local file name
@@ -225,8 +225,10 @@ func main() {
 
 		// cleanup and re-verify section, if it's been more than 14 hours
 
-		if service.hoursSinceVerified() > 14 {
-			fmt.Println("cleaning up at", time.Now())
+		now := time.Now()
+		if now.Hour() == 2 && service.hoursSinceLastClean() > 14 {
+			fmt.Println("cleaning up at", now)
+			service.setCleanTime(now)
 			removeDeletedFiles(&service, false)
 			verified = false
 		}

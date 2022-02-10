@@ -29,9 +29,11 @@ type GoogleDriveService struct {
 	uploadLookupMap   map[string]FileMetaData
 	downloadLookupMap map[string]FileMetaData
 
-	verifiedAt              time.Time
+	verifiedAt              time.Time // if anything is newer than the verifiedAt timestamp, then we will upload/download
 	verifiedAtPlusOneSec    time.Time
-	mostRecentTimestampSeen time.Time
+	mostRecentTimestampSeen time.Time // when successfully verified, the most recent timestamp seen will be set to verifiedAt
+
+	cleanedAt time.Time
 }
 
 //*************************************************************************************************
@@ -89,10 +91,17 @@ func (service *GoogleDriveService) setVerifiedTime() {
 //*************************************************************************************************
 //*************************************************************************************************
 
-func (service *GoogleDriveService) hoursSinceVerified() float64 {
+func (service *GoogleDriveService) hoursSinceLastClean() float64 {
 	now := time.Now()
-	diff := now.Sub(service.verifiedAt)
+	diff := now.Sub(service.cleanedAt)
 	return diff.Hours()
+}
+
+//*************************************************************************************************
+//*************************************************************************************************
+
+func (service *GoogleDriveService) setCleanTime(cleaningAt time.Time) {
+	service.cleanedAt = cleaningAt
 }
 
 //*************************************************************************************************
