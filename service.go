@@ -586,20 +586,24 @@ func (service *GoogleDriveService) handleCreate(localPath string, localFileInfo 
 	} else {
 		request := CreateFileRequest{ID: ids[0], Name: localFileInfo.Name(), Parents: parents, ModifiedTime: formattedTime}
 
-		var err error
-
 		if localFileInfo.Size() > LARGE_FILE_THRESHOLD_BYTES {
-			fh, openErr := os.Open(localPath)
-			if openErr == nil {
-				err = service.conn.uploadLargeFile(request.ID, &request, fh, localFileInfo.Size())
+			fh, err := os.Open(localPath)
+			if err != nil {
+				return err
+			}
+			err = service.conn.uploadLargeFile(request.ID, &request, fh, localFileInfo.Size())
+			if err != nil {
+				return err
 			}
 		} else {
-			fileData, _ := os.ReadFile(localPath)
+			fileData, err := os.ReadFile(localPath)
+			if err != nil {
+				return err
+			}
 			err = service.conn.uploadFile(request.ID, &request, fileData)
-		}
-
-		if err != nil {
-			return err
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -615,20 +619,24 @@ func (service *GoogleDriveService) handleSingleUpload(localPath string, modified
 	formattedTime := modifiedTime.Format(time.RFC3339Nano)
 	request := UpdateFileRequest{ModifiedTime: formattedTime}
 
-	var err error
-
 	if fileLength > LARGE_FILE_THRESHOLD_BYTES {
-		fh, openErr := os.Open(localPath)
-		if openErr == nil {
-			err = service.conn.uploadLargeFile(fileMetaData.ID, &request, fh, fileLength)
+		fh, err := os.Open(localPath)
+		if err != nil {
+			return err
+		}
+		err = service.conn.uploadLargeFile(fileMetaData.ID, &request, fh, fileLength)
+		if err != nil {
+			return err
 		}
 	} else {
-		data, _ := os.ReadFile(localPath)
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			return err
+		}
 		err = service.conn.uploadFile(fileMetaData.ID, &request, data)
-	}
-
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
