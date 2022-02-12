@@ -538,7 +538,7 @@ func (service *GoogleDriveService) handleDownloads() bool {
 	sort.Strings(foldersToCreate)
 
 	for _, localPath := range foldersToCreate {
-		err := os.Mkdir(localPath, os.ModeDir)
+		err := os.Mkdir(localPath, 0766)
 		if err == nil {
 			service.localFiles[localPath] = true // save this so we aren't surprised later that a new folder appeared
 			somethingWasDownloaded = true
