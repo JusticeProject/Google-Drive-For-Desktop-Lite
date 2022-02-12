@@ -417,7 +417,9 @@ func (service *GoogleDriveService) localFilesModified() bool {
 		// if file shows up locally that was not there before
 		_, inLocalMap := service.localFiles[path]
 		if !inLocalMap {
-			DebugLog(path, "suddenly appeared")
+			if debug {
+				fmt.Println(path, "suddenly appeared")
+			}
 			service.filesToUpload[path] = true
 			service.localFiles[path] = true
 			service.saveTimestamp(modifiedAt)
@@ -426,7 +428,9 @@ func (service *GoogleDriveService) localFilesModified() bool {
 
 		timestampDiff := modifiedAt.Sub(service.verifiedAt)
 		if timestampDiff > 0 {
-			DebugLog(path, "has changed")
+			if debug {
+				fmt.Println(path, "has changed")
+			}
 			service.filesToUpload[path] = true
 			service.saveTimestamp(modifiedAt)
 			return nil
@@ -451,7 +455,9 @@ func (service *GoogleDriveService) getRemoteModifiedFiles() ([]FileMetaData, err
 	// Queries per 100 seconds	20,000
 	// Queries per day	1,000,000,000
 
-	DebugLog("checking if remote side was modified")
+	if debug {
+		fmt.Println("checking if remote side was modified")
+	}
 
 	timestamp := service.verifiedAtPlusOneSec.UTC().Format(time.RFC3339)
 	files, err := service.conn.getModifiedItems(timestamp)
@@ -459,8 +465,10 @@ func (service *GoogleDriveService) getRemoteModifiedFiles() ([]FileMetaData, err
 		return []FileMetaData{}, err
 	}
 
-	DebugLog(len(files), "files were modified")
-	DebugLog(files)
+	if debug {
+		fmt.Println(len(files), "files were modified")
+		fmt.Println(files)
+	}
 
 	// save the newest timestamp that we see
 	for _, file := range files {
@@ -534,7 +542,9 @@ func (service *GoogleDriveService) handleDownloads() bool {
 		if err == nil {
 			service.localFiles[localPath] = true // save this so we aren't surprised later that a new folder appeared
 			somethingWasDownloaded = true
-			DebugLog("created local folder", localPath)
+			if debug {
+				fmt.Println("created local folder", localPath)
+			}
 		} else {
 			fmt.Println(err)
 		}
@@ -577,7 +587,9 @@ func (service *GoogleDriveService) handleCreate(localPath string, localFileInfo 
 	parentId, parentInMap := service.uploadLookupMap[parentPath]
 	if !parentInMap {
 		// if parent folder is not on remote side yet just skip the file for now, we'll handle it on the next loop
-		DebugLog("parent not in map yet")
+		if debug {
+			fmt.Println("parent not in map yet")
+		}
 		return errors.New("parent not in map yet")
 	}
 	parents := []string{parentId.ID}
@@ -680,7 +692,9 @@ func (service *GoogleDriveService) handleUploads() error {
 	for _, localPath := range foldersToCreate {
 		_, existsOnServer := service.uploadLookupMap[localPath]
 		if !existsOnServer {
-			DebugLog(localPath, "does not exist on server")
+			if debug {
+				fmt.Println(localPath, "does not exist on server")
+			}
 			localFileInfo := allLocalFileInfo[localPath]
 			err := service.handleCreate(localPath, localFileInfo)
 			if err != nil {
@@ -699,7 +713,9 @@ func (service *GoogleDriveService) handleUploads() error {
 
 		remoteFileData, existsOnServer := service.uploadLookupMap[localPath]
 		if !existsOnServer {
-			DebugLog(localPath, "does not exist on server")
+			if debug {
+				fmt.Println(localPath, "does not exist on server")
+			}
 
 			// create file
 			err := service.handleCreate(localPath, localFileInfo)
@@ -710,7 +726,9 @@ func (service *GoogleDriveService) handleUploads() error {
 			localModTime := localFileInfo.ModTime()
 			remoteModTime, _ := time.Parse(time.RFC3339Nano, remoteFileData.ModifiedTime)
 			diff := localModTime.Sub(remoteModTime)
-			DebugLog(localFileInfo.Name(), "local mod time is newer by", diff.Seconds(), "seconds")
+			if debug {
+				fmt.Println(localFileInfo.Name(), "local mod time is newer by", diff.Seconds(), "seconds")
+			}
 
 			// if the local file is newer, then calculate the md5's
 			// allow for some floating point roundoff error
@@ -718,8 +736,10 @@ func (service *GoogleDriveService) handleUploads() error {
 				localMd5 := getMd5OfFile(localPath)
 
 				if localMd5 != remoteFileData.Md5Checksum {
-					DebugLog("md5's do not match", localMd5, remoteFileData.Md5Checksum)
-					DebugLog("local mod time is newer", localModTime, remoteModTime)
+					if debug {
+						fmt.Println("md5's do not match", localMd5, remoteFileData.Md5Checksum)
+						fmt.Println("local mod time is newer", localModTime, remoteModTime)
+					}
 					err := service.handleSingleUpload(localPath, localFileInfo.ModTime(), localFileInfo.Size())
 					if err != nil {
 						return err
@@ -747,7 +767,9 @@ func (service *GoogleDriveService) verifyUploads() {
 		remoteFileData, onServer := service.uploadLookupMap[localPath]
 
 		if !onServer {
-			DebugLog(localPath, "not on server")
+			if debug {
+				fmt.Println(localPath, "not on server")
+			}
 			continue
 		}
 
@@ -759,7 +781,9 @@ func (service *GoogleDriveService) verifyUploads() {
 			if localMd5 == remoteFileData.Md5Checksum {
 				delete(service.filesToUpload, localPath)
 			} else {
-				DebugLog("md5 did not match for", localPath)
+				if debug {
+					fmt.Println("md5 did not match for", localPath)
+				}
 			}
 		}
 	}

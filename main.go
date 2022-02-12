@@ -33,7 +33,9 @@ func removeDeletedFiles(service *GoogleDriveService, promptUser bool) {
 		}
 	}
 
-	DebugLog("Proceeding to remove deleted files...")
+	if debug {
+		fmt.Println("Proceeding to remove deleted files...")
+	}
 
 	// if there are any errors when filling the lookup map, then don't proceed!!
 	localToRemoteLookup := make(map[string]FileMetaData) // key=local file name
@@ -126,12 +128,16 @@ func main() {
 		// upload section
 
 		// check if we need to upload anything
-		DebugLog("Checking for any new or modified local files/folders")
+		if debug {
+			fmt.Println("Checking for any new or modified local files/folders")
+		}
 		localModified := service.localFilesModified()
 
 		// do the upload
 		if localModified {
-			DebugLog("Preparing to upload files")
+			if debug {
+				fmt.Println("Preparing to upload files")
+			}
 			service.clearUploadLookupMap()
 			err := service.fillUploadLookupMap(service.getBaseFolderSlice())
 			if err != nil {
@@ -173,7 +179,9 @@ func main() {
 
 		// do the download or re-download if it was not verified from the last loop
 		if len(service.filesToDownload) > 0 {
-			DebugLog("Preparing to download files")
+			if debug {
+				fmt.Println("Preparing to download files")
+			}
 			service.handleDownloads()
 		}
 
@@ -182,7 +190,9 @@ func main() {
 		// verify section
 
 		if len(service.filesToUpload) > 0 {
-			DebugLog("Need to verify uploads. Grabbing remote metadata first.")
+			if debug {
+				fmt.Println("Need to verify uploads. Grabbing remote metadata first.")
+			}
 			service.clearUploadLookupMap()
 			err := service.fillUploadLookupMap(service.getBaseFolderSlice())
 			if err != nil {
@@ -192,7 +202,9 @@ func main() {
 		}
 
 		if len(service.filesToDownload) > 0 {
-			DebugLog("Need to verify downloads. Grabbing remote metadata first.")
+			if debug {
+				fmt.Println("Need to verify downloads. Grabbing remote metadata first.")
+			}
 			// again grab all the metadata for the files/folders that are currently on the remote shared drive
 			service.clearDownloadLookupMap()
 			err := service.fillDownloadLookupMap(remoteModifiedFiles, verified)
