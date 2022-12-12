@@ -110,7 +110,7 @@ func main() {
 	service.fillLocalMap()
 
 	var verified bool = false
-	const SLEEP_SECONDS time.Duration = 30
+	const SLEEP_SECONDS time.Duration = 300
 	firstPass := true
 
 	for {

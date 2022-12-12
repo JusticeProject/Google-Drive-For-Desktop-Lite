@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -114,7 +113,7 @@ type CreateFolderRequest struct {
 
 func (conn *GoogleDriveConnection) initializeGoogleDrive() {
 	// load the service account file
-	data, err := ioutil.ReadFile("config/service-account.json")
+	data, err := os.ReadFile("config/service-account.json")
 	if err != nil {
 		log.Fatal("failed to read json file")
 	}
@@ -129,7 +128,7 @@ func (conn *GoogleDriveConnection) initializeGoogleDrive() {
 	conn.client = conf.Client(conn.ctx)
 
 	// load the api key from a file
-	apiKeyBytes, err := ioutil.ReadFile("config/api-key.txt")
+	apiKeyBytes, err := os.ReadFile("config/api-key.txt")
 	if err != nil {
 		log.Fatal("failed to read API key")
 	}
