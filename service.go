@@ -27,7 +27,7 @@ type GoogleDriveService struct {
 	filesToUpload     map[string]bool
 	filesToDownload   map[string]FileMetaData
 	uploadLookupMap   map[string]FileMetaData
-	downloadLookupMap map[string]FileMetaData
+	downloadLookupMap map[string]FileMetaData // key = path + filename, value = metadata
 
 	verifiedAt              time.Time // if anything is newer than the verifiedAt timestamp, then we will upload/download
 	verifiedAtPlusOneSec    time.Time
