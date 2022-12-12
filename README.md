@@ -23,6 +23,10 @@ This quickstart for Google Drive for Developers might be useful: https://develop
   * click Create Credentials again
   * select Service Account
   * follow the steps and save the JSON to the file config/service-account.json
+* Share folders with the newly-created Service Account:
+  * Use the Google Drive web interface to find a folder you want to use
+  * Right-click the folder and share it with the Service Account's email address. The permissions should be Editor.
+  * Also copy the url for the shared folder to the clipboard. This url will contain the folder id which should be placed in the file config/folder-ids.txt
 
 ### Running
 Use the default configuration by running: ```./Google-Drive-For-Desktop-Lite```
